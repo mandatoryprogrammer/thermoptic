@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<!-- 
+curl --proxy http://test:test@127.0.0.1:1234 --insecure -v -X POST http://localhost:3333 -d "username=test_user123" -d "subscribe=on" -d "favcolor=%23ff0000"
+
+curl 'http://localhost:3333/' \
+  --insecure \
+  -v \
+  --proxy http://test:test@127.0.0.1:1234 \
+  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+  -H 'Accept-Language: en-US,en;q=0.9' \
+  -H 'Cache-Control: max-age=0' \
+  -H 'Connection: keep-alive' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -H 'Origin: null' \
+  -H 'Sec-Fetch-Dest: document' \
+  -H 'Sec-Fetch-Mode: navigate' \
+  -H 'Sec-Fetch-Site: cross-site' \
+  -H 'Sec-Fetch-User: ?1' \
+  -H 'Upgrade-Insecure-Requests: 1' \
+  -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36' \
+  -H 'sec-ch-ua: "Not:A-Brand";v="24", "Chromium";v="134"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Linux"' \
+  --data-raw 'username=test_user123&subscribe=on&favcolor=%23ff0000'
+-->
+
+<head>
+    <meta charset="UTF-8">
+    <title>Auto Submit Form</title>
+    <script>
+        window.onload = function() {
+            document.forms[0].submit();
+        };
+    </script>
+</head>
+
+<body>
+    <form action="http://localhost:3333/" method="POST">
+        <input type="text" name="username" value="test_user123">
+        <input type="checkbox" name="subscribe" checked>
+        <input type="color" name="favcolor" value="#ff0000">
+        <button type="submit">Click Me</button>
+    </form>
+</body>
+
+</html>

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>File Upload</title>
+</head>
+
+<!--
+curl 'http://localhost:3333/' \
+  -v \
+  --proxy http://test:test@127.0.0.1:1234 \
+  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+  -H 'Accept-Language: en-US,en;q=0.9' \
+  -H 'Cache-Control: max-age=0' \
+  -H 'Connection: keep-alive' \
+  -H 'Content-Type: multipart/form-data; boundary=----WebKitFormBoundarybTjnZ15e85TJQ5nt' \
+  -H 'Origin: http://127.0.0.1:8000' \
+  -H 'Referer: http://127.0.0.1:8000/' \
+  -H 'Sec-Fetch-Dest: document' \
+  -H 'Sec-Fetch-Mode: navigate' \
+  -H 'Sec-Fetch-Site: cross-site' \
+  -H 'Sec-Fetch-User: ?1' \
+  -H 'Upgrade-Insecure-Requests: 1' \
+  -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36' \
+  -H 'sec-ch-ua: "Not:A-Brand";v="24", "Chromium";v="134"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Linux"' \
+  --data-raw $'------WebKitFormBoundarybTjnZ15e85TJQ5nt\r\nContent-Disposition: form-data; name="username"\r\n\r\ntestuser\r\n------WebKitFormBoundarybTjnZ15e85TJQ5nt\r\nContent-Disposition: form-data; name="token"\r\n\r\nabc123\r\n------WebKitFormBoundarybTjnZ15e85TJQ5nt\r\nContent-Disposition: form-data; name="file"; filename="1x1#000000.gif"\r\nContent-Type: image/gif\r\n\r\n\r\n------WebKitFormBoundarybTjnZ15e85TJQ5nt--\r\n'
+
+curl -X POST http://localhost:3333 \
+-v \
+--proxy http://test:test@127.0.0.1:1234 \
+-H 'Origin: http://127.0.0.1:8000' \
+-H 'Referer: http://127.0.0.1:8000/' \
+-F "username=testuser" \
+-F "token=abc123" \
+-F "file=@/home/user/Downloads/1x1#000000.gif"
+
+  -->
+
+<body>
+    <form action="http://localhost:3333" method="POST" enctype="multipart/form-data">
+        <label for="username">Username:</label>
+        <input type="text" name="username" value="testuser"><br><br>
+
+        <label for="token">Token:</label>
+        <input type="text" name="token" value="abc123"><br><br>
+
+        <label for="file">Upload File:</label>
+        <input type="file" name="file"><br><br>
+
+        <button type="submit">Upload</button>
+    </form>
+</body>
+
+</html>

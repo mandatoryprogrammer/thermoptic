@@ -1,0 +1,29 @@
+services:
+  chrome:
+    build:
+      context: ./chrome/
+    environment:
+      PORT: 3003
+    ports:
+      - 3003:3003
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+  thermoptic:
+    build: .
+    volumes:
+      - ./ssl:/work/cassl
+      - ./hooks:/work/hooks
+    depends_on:
+      - chrome
+    ports:
+      - 1234:1234
+    environment:
+      HTTP_PROXY_PORT: 1234
+      CHROME_DEBUGGING_PORT: 3003
+      CHROME_DEBUGGING_HOST: chrome
+      PROXY_USERNAME: changeme
+      PROXY_PASSWORD: changeme
+      # ON_START_HOOK_FILE_PATH: /work/hooksonstart.js
+      # BEFORE_REQUEST_HOOK_FILE_PATH: /work/hooks/beforerequest.js
+      # AFTER_REQUEST_HOOK_FILE_PATH: /work/hooks/afterrequest.js

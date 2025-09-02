@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<!--
+curl 'http://localhost:3333/css/style.css' \
+  --insecure \
+  -v \
+  --proxy http://test:test@127.0.0.1:1234 \
+  -H 'Accept: text/css,*/*;q=0.1' \
+  -H 'Accept-Language: en-US,en;q=0.9' \
+  -H 'Connection: keep-alive' \
+  -H 'Referer: http://127.0.0.1:8000/' \
+  -H 'Sec-Fetch-Dest: style' \
+  -H 'Sec-Fetch-Mode: no-cors' \
+  -H 'Sec-Fetch-Site: cross-site' \
+  -H 'Sec-Fetch-Storage-Access: none' \
+  -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36' \
+  -H 'sec-ch-ua: "Not:A-Brand";v="24", "Chromium";v="134"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Linux"'
+
+-->
+
+<head>
+    <meta charset="UTF-8">
+    <title>Localhost CSS Test</title>
+    <link rel="stylesheet" href="http://localhost:3333/css/style.css">
+</head>
+
+<body>
+    <h1>Test Page</h1>
+</body>
+
+</html>
