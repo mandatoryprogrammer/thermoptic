@@ -4,6 +4,24 @@ import * as cdp from './cdp.js';
 import * as requestengine from './requestengine.js';
 import * as fetchgen from './fetchgen.js';
 
+// Top-level error handling for unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:');
+    console.error('  Promise:', promise);
+    console.error('  Reason:', reason);
+
+    // If the reason is an Error object, print the stack
+    if (reason instanceof Error) {
+        console.error('  Stack:', reason.stack);
+    }
+});
+
+// Optional: catch uncaught exceptions too
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+    console.error('Stack:', err.stack);
+});
+
 (async() => {
     let http_proxy_port = 1234;
     if (process.env.HTTP_PROXY_PORT) {

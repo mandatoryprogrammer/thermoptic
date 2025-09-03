@@ -20,6 +20,5 @@ socat TCP-LISTEN:3003,fork TCP:127.0.0.1:3002 &
   --remote-debugging-port=3002 \
   --remote-debugging-address=0.0.0.0 \
   --no-sandbox \
-  --disable-setuid-sandbox \
   --user-data-dir=/tmp/chrome-profile \
   "https://example.com"
