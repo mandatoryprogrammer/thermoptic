@@ -47,7 +47,7 @@ docker compose up --build
 That's all, now you can proxy traffic through it:
 
 ```
-curl ---insecure -proxy http://changeme:changeme@127.0.0.1:1234 https://ja4db.com/id/ja4h/
+curl --proxy http://changeme:changeme@127.0.0.1:1234 --insecure https://ja4db.com/id/ja4h/
 ```
 
 Important notes:
