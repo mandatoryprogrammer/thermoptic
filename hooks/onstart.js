@@ -1,6 +1,24 @@
 import CDP from 'chrome-remote-interface';
 import * as utils from '../utils.js';
 
+function get_cdp_config() {
+    console.log(process.env);
+    let port = 9222;
+    let host = '127.0.0.1';
+
+    if (process.env.CHROME_DEBUGGING_HOST) {
+        host = process.env.CHROME_DEBUGGING_HOST;
+    }
+    if (process.env.CHROME_DEBUGGING_PORT) {
+        port = parseInt(process.env.CHROME_DEBUGGING_PORT);
+    }
+
+    return {
+        host: host,
+        port: port,
+    }
+}
+
 // This function is called upon starting thermoptic
 // You can visit pages, perform actions that require
 // a full browser, etc here.
@@ -17,7 +35,9 @@ export async function hook(cdp) {
     */
     const { Target } = cdp;
     const { targetId } = await Target.createTarget({ url: 'about:blank' });
-    const client = await CDP({ target: targetId });
+    let init_params = get_cdp_config();
+    init_params.target = targetId; 
+    const client = await CDP(init_params);
     const { Page, DOM } = client;
 
     await Page.enable();

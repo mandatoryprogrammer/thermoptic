@@ -24,6 +24,6 @@ services:
       CHROME_DEBUGGING_HOST: chrome
       PROXY_USERNAME: changeme
       PROXY_PASSWORD: changeme
-      # ON_START_HOOK_FILE_PATH: /work/onstart.js
+      # ON_START_HOOK_FILE_PATH: /work/hooks/onstart.js
       # BEFORE_REQUEST_HOOK_FILE_PATH: /work/hooks/beforerequest.js
       # AFTER_REQUEST_HOOK_FILE_PATH: /work/hooks/afterrequest.js
