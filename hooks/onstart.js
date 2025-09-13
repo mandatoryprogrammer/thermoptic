@@ -2,7 +2,6 @@ import CDP from 'chrome-remote-interface';
 import * as utils from '../utils.js';
 
 function get_cdp_config() {
-    console.log(process.env);
     let port = 9222;
     let host = '127.0.0.1';
 
