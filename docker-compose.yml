@@ -2,6 +2,7 @@ services:
   chrome:
     build:
       context: ./chrome/
+    platform: linux/amd64
     environment:
       PORT: 3003
     ports:
