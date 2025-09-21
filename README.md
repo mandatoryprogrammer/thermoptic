@@ -153,7 +153,7 @@ These environment variables specify how `thermoptic` should be configured when i
 
 `PROXY_PASSWORD`: The password which is used to authenticate you to the proxy, default is `changeme`.
 
-`ON_START_HOOK_FILE_PATH`: Custom Node code to run on proxy start. The proxy will not begin listening until this hook has completed, see the example in `./hooks/`. The sample demonstrates using the browser to walk through Cloudflare's JavaScript browser check before starting the proxy.
+`ON_START_HOOK_FILE_PATH`: Custom Node code to run on proxy start. The proxy will not begin listening until this hook has completed, see the example in `./hooks/`. The sample demonstrates using the browser to click through Cloudflare's JavaScript browser check before starting the proxy.
 
 `BEFORE_REQUEST_HOOK_FILE_PATH`: Custom Node code to run before a request has been proxied. This is useful if you need the browser to pass some check before a site HTTP request is made.
 
@@ -177,4 +177,4 @@ export async function hook(cdp) {
 }
 ```
 
-For an example implementation, see the [`./hooks/onstart.js`](https://github.com/mandatoryprogrammer/thermoptic/blob/main/hooks/onstart.js) file which loads Cloudflare's JavaScript check to pass it before starting the proxy.
+For an example implementation, see the [`./hooks/onstart.js`](https://github.com/mandatoryprogrammer/thermoptic/blob/main/hooks/onstart.js) file which [bypasses the Cloudflare turnstile CAPTCHA](https://github.com/mandatoryprogrammer/thermoptic/blob/main/tutorials/turnstile/cloudflare-turnstile-bypass.md) (and other Cloudflare anti-bot checks).
