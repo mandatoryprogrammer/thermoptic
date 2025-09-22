@@ -2,7 +2,7 @@
 
 NOTE: I appologize for any writing mistakes in this tutorial. Due to the subject matter popular LLMs refused to help me critique it 😂.
 
-This is a tutorial on how to write hooks for the `thermoptic` proxy which allow you to bypass anti-bot services such as Cloudflare's turnstile CAPTCHA. You can use this tutorial as a template to write hooks to bypass whichever anti-bot frameworks are causing you trouble.
+This is a tutorial on how to write hooks for the [`thermoptic`](https://github.com/mandatoryprogrammer/thermoptic) proxy which allow you to bypass anti-bot services such as Cloudflare's turnstile CAPTCHA. You can use this tutorial as a template to write hooks to bypass whichever anti-bot frameworks are causing you trouble.
 
 If you've spent some time browsing the web you're probably familiar with this dreaded CAPTCHA box:
 
