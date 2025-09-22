@@ -165,4 +165,4 @@ I hope this tutorial makes it clear how to write your own `thermoptic` hooks to 
 
 **Important**: Before you decide to flame me for this tutorial please see [this section of the `thermoptic` README.](https://github.com/mandatoryprogrammer/thermoptic?tab=readme-ov-file#why-release-this-tool-dont-you-care-about-the-evil-actors-youre-enabling)
 
-Notably this tutorial isn't meant to imply that Cloudflare's approach is a bad one. In fact the Cloudflare folks behind turnstile and the anti-bot efforts are some sharp folks (just give [their blog](https://blog.cloudflare.com/turnstile-private-captcha-alternative/) a read!). However, it does serve as a clear example that even world-class anti-bot frameworks can be handled with `thermoptic`.
+Notably this tutorial isn't meant to imply that Cloudflare's approach is a bad one. In fact the Cloudflare people behind turnstile and the anti-bot efforts are some sharp folks (I recommend giving [their blog](https://blog.cloudflare.com/turnstile-private-captcha-alternative/) a read!). However, it does serve as a clear example that even world-class anti-bot frameworks can be handled with `thermoptic`.
