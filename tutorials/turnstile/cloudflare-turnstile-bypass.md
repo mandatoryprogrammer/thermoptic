@@ -155,7 +155,7 @@ Once the hook has finished running we can now scrape the site with `curl` easily
 curl --proxy http://changeme:changeme@127.0.0.1:1234 --insecure https://example.com
 ```
 
-Nice and easy, and no changes need to be made to our scraping client to handle Cloudflare! All of the work of browser cookies and byte-perfect protocol presentation is handled entirely by `thermoptic` fpr us.
+Nice and easy, and no changes need to be made to our scraping client to handle Cloudflare! All of the work of browser cookies and byte-perfect protocol presentation is handled entirely by `thermoptic` for us.
 
 To make things better, this [proof-of-concept `thermoptic` hook](https://github.com/mandatoryprogrammer/thermoptic/blob/main/hooks/onstart.js) also passes the lesser "Checking your browser..." non-interactive check as well. So unless Cloudflare has "hard blocked" your IP, you can scrape sites behind their service with ease.
 
