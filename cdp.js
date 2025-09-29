@@ -24,6 +24,17 @@ function timeout_action(reject_func) {
     }, (config.PROXY_REQUEST_TIMEOUT))
 }
 
+async function close_browser_session(browser) {
+    if (!browser) {
+        return;
+    }
+    try {
+        await browser.close();
+    } catch (err) {
+        console.error('[WARN] Failed to close browser session:', err);
+    }
+}
+
 /*
     https://chromedevtools.github.io/devtools-protocol/tot/Storage/#method-setCookies 
     https://chromedevtools.github.io/devtools-protocol/tot/Network/#type-CookieParam
@@ -35,10 +46,14 @@ function timeout_action(reject_func) {
 */
 export async function set_browser_cookies(cookies_array) {
     const browser = await start_browser_session();
-    const { Storage } = browser;
-    await Storage.setCookies({
-        'cookies': cookies_array
-    });
+    try {
+        const { Storage } = browser;
+        await Storage.setCookies({
+            'cookies': cookies_array
+        });
+    } finally {
+        await close_browser_session(browser);
+    }
 }
 
 // Requests which are from inclusion on another page such as <link>, <script>,
@@ -81,6 +96,7 @@ async function _resource_request(url, protocol, method, path, headers, body) {
 
         // Run the resource capture logic
         (async() => {
+            let browser = null;
             try {
                 // Get the URL that the fetch() should be served from
                 // We use the headers to inform this.
@@ -108,7 +124,7 @@ async function _resource_request(url, protocol, method, path, headers, body) {
                     return;
                 }
 
-                const browser = await start_browser_session();
+                browser = await start_browser_session();
                 const new_tab_info = await new_tab(browser, 'about:blank');
                 const tab = new_tab_info.tab;
 
@@ -132,6 +148,8 @@ async function _resource_request(url, protocol, method, path, headers, body) {
                 resolve(request_result);
             } catch (err) {
                 reject(err);
+            } finally {
+                await close_browser_session(browser);
             }
         })();
     });
@@ -176,6 +194,7 @@ async function _fetch_request(url, protocol, method, path, headers, body) {
         }, config.PROXY_REQUEST_TIMEOUT);
 
         (async() => {
+            let browser = null;
             try {
                 let fetch_page_url = get_page_url_from_headers(url, headers);
                 let serve_base_page = true;
@@ -197,7 +216,7 @@ async function _fetch_request(url, protocol, method, path, headers, body) {
                     serve_base_page = false;
                 }
 
-                const browser = await start_browser_session();
+                browser = await start_browser_session();
                 const new_tab_info = await new_tab(browser, 'about:blank');
                 const tab = new_tab_info.tab;
 
@@ -229,6 +248,8 @@ async function _fetch_request(url, protocol, method, path, headers, body) {
                 safeResolve(request_result);
             } catch (err) {
                 safeReject(err);
+            } finally {
+                await close_browser_session(browser);
             }
         })();
     });
@@ -365,6 +386,7 @@ async function _form_submission(url, protocol, method, path, headers, body, stat
         timeout_action(() => reject(new Error('TIMEOUT')));
 
         (async() => {
+            let browser = null;
             try {
                 // Determine if the user manually submitted the form based
                 // off the presence of the Sec-Fetch-User header
@@ -437,7 +459,7 @@ async function _form_submission(url, protocol, method, path, headers, body, stat
                     return;
                 }
 
-                const browser = await start_browser_session();
+                browser = await start_browser_session();
                 const new_tab_info = await new_tab(browser, 'about:blank');
                 const tab = new_tab_info.tab;
 
@@ -461,6 +483,8 @@ async function _form_submission(url, protocol, method, path, headers, body, stat
                 resolve(request_result);
             } catch (err) {
                 reject(err);
+            } finally {
+                await close_browser_session(browser);
             }
         })();
     });
@@ -713,7 +737,13 @@ export async function manual_browser_visit(url) {
             body: ''
         };
     } finally {
-        await close_tab(browser, tab, new_tab_info.target_id);
+        try {
+            await close_tab(browser, tab, new_tab_info.target_id);
+        } catch (closeErr) {
+            console.error("Failed to close tab:", closeErr);
+        } finally {
+            await close_browser_session(browser);
+        }
     }
 }
 
@@ -862,9 +892,17 @@ export async function delete_chrome_bookmark_by_id(id) {
     const browser = await start_browser_session();
     const new_tab_info = await new_tab(browser, 'chrome://bookmarks-side-panel.top-chrome/');
     const tab = new_tab_info.tab;
-    return _delete_chrome_bookmark_by_id(tab, id).finally(async() => {
-        await close_tab(browser, tab, new_tab_info.target_id);
-    });
+    try {
+        return await _delete_chrome_bookmark_by_id(tab, id);
+    } finally {
+        try {
+            await close_tab(browser, tab, new_tab_info.target_id);
+        } catch (closeErr) {
+            console.error("Failed to close tab:", closeErr);
+        } finally {
+            await close_browser_session(browser);
+        }
+    }
 }
 async function _delete_chrome_bookmark_by_id(tab, id) {
     console.log(`[STATUS] Deleting bookmark ID ${id}`);
