@@ -16,9 +16,14 @@ Xvfb :99 -screen 0 1024x768x16 &
 socat TCP-LISTEN:3003,fork TCP:127.0.0.1:3002 &
 
 # Launch chrome with the debugging port
-/usr/bin/google-chrome-stable \
-  --remote-debugging-port=3002 \
-  --remote-debugging-address=0.0.0.0 \
-  --no-sandbox \
-  --user-data-dir=/tmp/chrome-profile \
-  "https://example.com"
+while true; do
+  /usr/bin/google-chrome-stable \
+    --remote-debugging-port=3002 \
+    --remote-debugging-address=0.0.0.0 \
+    --no-sandbox \
+    --user-data-dir=/tmp/chrome-profile \
+    "https://example.com"
+
+  echo "Chrome crashed or exited. Restarting in 2 seconds..."
+  sleep 2
+done
