@@ -22,7 +22,15 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
     // If there is we run it.
     if (process.env.ON_START_HOOK_FILE_PATH) {
         const cdp_instance = await cdp.start_browser_session();
-        await utils.run_hook_file(process.env.ON_START_HOOK_FILE_PATH, cdp_instance);
+        try {
+            await utils.run_hook_file(process.env.ON_START_HOOK_FILE_PATH, cdp_instance);
+        } finally {
+            try {
+                await cdp_instance.close();
+            } catch (closeErr) {
+                console.error('[WARN] Failed to close CDP session:', closeErr);
+            }
+        }
     }
 
     const proxyServer = new AnyProxy.ProxyServer(options);

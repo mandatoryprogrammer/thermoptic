@@ -51,32 +51,42 @@ process.on('uncaughtException', (err) => {
             }
 
             let cdp_instance = null;
-            // We now check if there is an before-request hook defined.
-            if (process.env.BEFORE_REQUEST_HOOK_FILE_PATH) {
-                cdp_instance = await cdp.start_browser_session();
-                await utils.run_hook_file(process.env.BEFORE_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, null);
-            }
-
-            const response = await requestengine.process_request(
-                proxy_request.url,
-                proxy_request.protocol,
-                proxy_request.requestOptions.method,
-                proxy_request.requestOptions.path,
-                utils.convert_headers_array(proxy_request._req.rawHeaders),
-                proxy_request.requestData,
-            );
-
-            // We now check if there is an after-request hook defined.
-            if (process.env.AFTER_REQUEST_HOOK_FILE_PATH) {
-                if (!cdp_instance) {
+            try {
+                // We now check if there is an before-request hook defined.
+                if (process.env.BEFORE_REQUEST_HOOK_FILE_PATH) {
                     cdp_instance = await cdp.start_browser_session();
+                    await utils.run_hook_file(process.env.BEFORE_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, null);
                 }
-                await utils.run_hook_file(process.env.AFTER_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, response);
-            }
 
-            return {
-                response: response
-            };
+                const response = await requestengine.process_request(
+                    proxy_request.url,
+                    proxy_request.protocol,
+                    proxy_request.requestOptions.method,
+                    proxy_request.requestOptions.path,
+                    utils.convert_headers_array(proxy_request._req.rawHeaders),
+                    proxy_request.requestData,
+                );
+
+                // We now check if there is an after-request hook defined.
+                if (process.env.AFTER_REQUEST_HOOK_FILE_PATH) {
+                    if (!cdp_instance) {
+                        cdp_instance = await cdp.start_browser_session();
+                    }
+                    await utils.run_hook_file(process.env.AFTER_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, response);
+                }
+
+                return {
+                    response: response
+                };
+            } finally {
+                if (cdp_instance) {
+                    try {
+                        await cdp_instance.close();
+                    } catch (closeErr) {
+                        console.error('[WARN] Failed to close CDP session:', closeErr);
+                    }
+                }
+            }
         }
     );
     http_proxy.start();
