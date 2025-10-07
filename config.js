@@ -51,20 +51,20 @@ export const PROXY_REQUEST_TIMEOUT = (1000 * 30);
 const DEFAULT_TAB_MAX_LIFETIME_MS = (1000 * 60 * 2);
 const DEFAULT_TAB_SWEEP_INTERVAL_MS = (1000 * 10);
 
-function parseEnvMilliseconds(envValue, defaultValue) {
-    if (!envValue) {
-        return defaultValue;
+function parse_env_milliseconds(env_value, default_value) {
+    if (!env_value) {
+        return default_value;
     }
 
-    const parsedValue = parseInt(envValue, 10);
-    if (Number.isNaN(parsedValue) || parsedValue <= 0) {
-        return defaultValue;
+    const parsed_value = parseInt(env_value, 10);
+    if (Number.isNaN(parsed_value) || parsed_value <= 0) {
+        return default_value;
     }
 
-    return parsedValue;
+    return parsed_value;
 }
 
-const resolvedTabMaxLifetimeMs = parseEnvMilliseconds(
+const resolved_tab_max_lifetime_ms = parse_env_milliseconds(
     process.env.TAB_MAX_LIFETIME_MS,
     DEFAULT_TAB_MAX_LIFETIME_MS
 );
@@ -72,11 +72,11 @@ const resolvedTabMaxLifetimeMs = parseEnvMilliseconds(
 const TAB_LIFETIME_SAFETY_BUFFER_MS = 2000;
 
 export const TAB_MAX_LIFETIME_MS = Math.max(
-    resolvedTabMaxLifetimeMs,
+    resolved_tab_max_lifetime_ms,
     PROXY_REQUEST_TIMEOUT + TAB_LIFETIME_SAFETY_BUFFER_MS
 );
 
-export const TAB_SWEEP_INTERVAL_MS = parseEnvMilliseconds(
+export const TAB_SWEEP_INTERVAL_MS = parse_env_milliseconds(
     process.env.TAB_SWEEP_INTERVAL_MS,
     DEFAULT_TAB_SWEEP_INTERVAL_MS
 );

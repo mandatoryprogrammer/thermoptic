@@ -5,7 +5,7 @@ import * as config from './config.js';
 import { writeFile, mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
-import { request as httpRequest } from 'node:http';
+import { request as http_request } from 'node:http';
 
 const REDIRECT_STATUS_CODES = [
     301, 302, 303, 307, 308
@@ -19,10 +19,10 @@ const TEMP_RESPONSE = {
     body: ''
 }
 
-const openTabs = new Map();
-let tabReaperTimer = null;
+const open_tabs = new Map();
+let tab_reaper_timer = null;
 
-function normalizeErrorMessage(err) {
+function normalize_error_message(err) {
     if (!err) {
         return '';
     }
@@ -34,13 +34,13 @@ function normalizeErrorMessage(err) {
     return String(err);
 }
 
-function isTargetAlreadyClosedError(err) {
-    const message = normalizeErrorMessage(err);
+function is_target_already_closed_error(err) {
+    const message = normalize_error_message(err);
     return message.includes('No target with given id') || message.includes('No such target');
 }
 
-function isTransientCloseError(err) {
-    const message = normalizeErrorMessage(err);
+function is_transient_close_error(err) {
+    const message = normalize_error_message(err);
     if (!message) {
         return false;
     }
@@ -52,74 +52,74 @@ function isTransientCloseError(err) {
     return false;
 }
 
-function attachDisconnectHandler(tabInfo) {
-    if (tabInfo.disconnectHandler || !tabInfo.tab || typeof tabInfo.tab.on !== 'function') {
+function attach_disconnect_handler(tab_info) {
+    if (tab_info.disconnect_handler || !tab_info.tab || typeof tab_info.tab.on !== 'function') {
         return;
     }
 
-    const handler = () => handleTrackedTabDisconnect(tabInfo.targetId);
-    tabInfo.tab.on('disconnect', handler);
-    tabInfo.disconnectHandler = handler;
+    const handler = () => handle_tracked_tab_disconnect(tab_info.target_id);
+    tab_info.tab.on('disconnect', handler);
+    tab_info.disconnect_handler = handler;
 }
 
-function detachDisconnectHandler(tabInfo) {
-    if (!tabInfo.disconnectHandler) {
+function detach_disconnect_handler(tab_info) {
+    if (!tab_info.disconnect_handler) {
         return;
     }
 
-    if (tabInfo.tab && typeof tabInfo.tab.removeListener === 'function') {
-        tabInfo.tab.removeListener('disconnect', tabInfo.disconnectHandler);
+    if (tab_info.tab && typeof tab_info.tab.removeListener === 'function') {
+        tab_info.tab.removeListener('disconnect', tab_info.disconnect_handler);
     }
 
-    tabInfo.disconnectHandler = null;
+    tab_info.disconnect_handler = null;
 }
 
-function handleTrackedTabDisconnect(targetId) {
-    const tabInfo = openTabs.get(targetId);
-    if (!tabInfo || tabInfo.closing) {
+function handle_tracked_tab_disconnect(target_id) {
+    const tab_info = open_tabs.get(target_id);
+    if (!tab_info || tab_info.closing) {
         return;
     }
 
-    console.warn(`[WARN] Tab ${targetId} disconnected unexpectedly; cleaning up.`);
-    releaseTrackedTab(tabInfo, 'cdp disconnect').catch((err) => {
-        console.error(`[WARN] Failed to cleanup tab ${targetId} after disconnect:`, err);
+    console.warn(`[WARN] Tab ${target_id} disconnected unexpectedly; cleaning up.`);
+    release_tracked_tab(tab_info, 'cdp disconnect').catch((err) => {
+        console.error(`[WARN] Failed to cleanup tab ${target_id} after disconnect:`, err);
     });
 }
 
-function registerOpenTab(browser, tab, targetId) {
-    const tabInfo = {
+function register_open_tab(browser, tab, target_id) {
+    const tab_info = {
         browser: browser,
         tab: tab,
-        targetId: targetId,
-        createdAt: Date.now(),
+        target_id: target_id,
+        created_at: Date.now(),
         closing: false,
-        disconnectHandler: null,
-        retryCount: 0
+        disconnect_handler: null,
+        retry_count: 0
     };
 
-    attachDisconnectHandler(tabInfo);
+    attach_disconnect_handler(tab_info);
 
-    openTabs.set(targetId, tabInfo);
-    ensureTabReaper();
-    return tabInfo;
+    open_tabs.set(target_id, tab_info);
+    ensure_tab_reaper();
+    return tab_info;
 }
 
-async function closeTargetWithFreshSession(targetId) {
-    let fallbackBrowser = null;
+async function close_target_with_fresh_session(target_id) {
+    let fallback_browser = null;
     try {
-        fallbackBrowser = await start_browser_session();
-        const { Target } = fallbackBrowser;
-        await Target.closeTarget({ targetId: targetId });
+        fallback_browser = await start_browser_session();
+        const { Target } = fallback_browser;
+        await Target.closeTarget({ targetId: target_id });
         return {
             success: true
         };
     } catch (err) {
-        if (isTargetAlreadyClosedError(err)) {
+        if (is_target_already_closed_error(err)) {
             return {
                 success: true
             };
         }
-        if (isTransientCloseError(err)) {
+        if (is_transient_close_error(err)) {
             return {
                 success: false,
                 error: err,
@@ -131,18 +131,18 @@ async function closeTargetWithFreshSession(targetId) {
             error: err
         };
     } finally {
-        await close_browser_session(fallbackBrowser);
+        await close_browser_session(fallback_browser);
     }
 }
 
-async function closeTargetViaHttp(targetId) {
+async function close_target_via_http(target_id) {
     const { host, port } = get_cdp_config();
 
     return new Promise((resolve) => {
-        const req = httpRequest({
+        const req = http_request({
             host: host,
             port: port,
-            path: `/json/close/${targetId}`,
+            path: `/json/close/${target_id}`,
             method: 'GET',
             timeout: 3000
         }, (res) => {
@@ -181,72 +181,72 @@ async function closeTargetViaHttp(targetId) {
     });
 }
 
-async function performTabClosure(tabInfo, reason) {
-    const targetId = tabInfo.targetId;
-    let targetClosed = false;
+async function perform_tab_closure(tab_info, reason) {
+    const target_id = tab_info.target_id;
+    let target_closed = false;
 
-    if (tabInfo.browser && tabInfo.browser.Target && typeof tabInfo.browser.Target.closeTarget === 'function') {
+    if (tab_info.browser && tab_info.browser.Target && typeof tab_info.browser.Target.closeTarget === 'function') {
         try {
-            await tabInfo.browser.Target.closeTarget({ targetId: targetId });
-            targetClosed = true;
+            await tab_info.browser.Target.closeTarget({ targetId: target_id });
+            target_closed = true;
         } catch (err) {
-            if (isTargetAlreadyClosedError(err)) {
-                targetClosed = true;
-            } else if (isTransientCloseError(err)) {
-                console.log(`[STATUS] Primary CDP session already closed while closing ${targetId} (${reason}); falling back.`);
+            if (is_target_already_closed_error(err)) {
+                target_closed = true;
+            } else if (is_transient_close_error(err)) {
+                console.log(`[STATUS] Primary CDP session already closed while closing ${target_id} (${reason}); falling back.`);
             } else {
-                console.error(`[WARN] Failed to close target ${targetId} via existing session (${reason}):`, err);
+                console.error(`[WARN] Failed to close target ${target_id} via existing session (${reason}):`, err);
             }
         }
     }
 
-    if (!targetClosed) {
-        const freshResult = await closeTargetWithFreshSession(targetId);
-        if (!freshResult.success && freshResult.error) {
-            if (freshResult.transient) {
-                console.log(`[STATUS] Fallback CDP session closed early while closing ${targetId} (${reason}); trying HTTP endpoint.`);
-            } else if (!isTargetAlreadyClosedError(freshResult.error)) {
-                console.error(`[WARN] Fallback closeTarget failed for ${targetId} (${reason}):`, freshResult.error);
+    if (!target_closed) {
+        const fresh_result = await close_target_with_fresh_session(target_id);
+        if (!fresh_result.success && fresh_result.error) {
+            if (fresh_result.transient) {
+                console.log(`[STATUS] Fallback CDP session closed early while closing ${target_id} (${reason}); trying HTTP endpoint.`);
+            } else if (!is_target_already_closed_error(fresh_result.error)) {
+                console.error(`[WARN] Fallback closeTarget failed for ${target_id} (${reason}):`, fresh_result.error);
             }
         }
-        targetClosed = targetClosed || freshResult.success;
+        target_closed = target_closed || fresh_result.success;
     }
 
-    if (!targetClosed) {
-        const httpResult = await closeTargetViaHttp(targetId);
-        if (!httpResult.success && httpResult.error && !isTargetAlreadyClosedError(httpResult.error)) {
-            console.error(`[WARN] HTTP closeTarget failed for ${targetId} (${reason}):`, httpResult.error);
+    if (!target_closed) {
+        const http_result = await close_target_via_http(target_id);
+        if (!http_result.success && http_result.error && !is_target_already_closed_error(http_result.error)) {
+            console.error(`[WARN] HTTP closeTarget failed for ${target_id} (${reason}):`, http_result.error);
         }
-        targetClosed = targetClosed || httpResult.success;
+        target_closed = target_closed || http_result.success;
     }
 
-    if (tabInfo.tab && typeof tabInfo.tab.close === 'function') {
+    if (tab_info.tab && typeof tab_info.tab.close === 'function') {
         try {
-            await tabInfo.tab.close();
+            await tab_info.tab.close();
         } catch (err) {
-            if (isTransientCloseError(err)) {
-                console.log(`[STATUS] Tab transport already closed for ${targetId} (${reason}); CDP target should be gone.`);
-            } else if (!isTargetAlreadyClosedError(err)) {
-                console.error(`[WARN] Failed to close tab session ${targetId} (${reason}):`, err);
+            if (is_transient_close_error(err)) {
+                console.log(`[STATUS] Tab transport already closed for ${target_id} (${reason}); CDP target should be gone.`);
+            } else if (!is_target_already_closed_error(err)) {
+                console.error(`[WARN] Failed to close tab session ${target_id} (${reason}):`, err);
             }
         }
     }
 
-    tabInfo.browser = null;
-    tabInfo.tab = null;
+    tab_info.browser = null;
+    tab_info.tab = null;
 
-    return targetClosed;
+    return target_closed;
 }
 
-function scheduleTabRetry(tabInfo, reason) {
-    const attempts = (tabInfo.retryCount || 0);
+function schedule_tab_retry(tab_info, reason) {
+    const attempts = (tab_info.retry_count || 0);
     const delay = Math.min(5000, 500 * Math.max(1, attempts));
 
     const timer = setTimeout(() => {
-        if (!openTabs.has(tabInfo.targetId) || tabInfo.closing) {
+        if (!open_tabs.has(tab_info.target_id) || tab_info.closing) {
             return;
         }
-        releaseTrackedTab(tabInfo, `${reason} (retry)`);
+        release_tracked_tab(tab_info, `${reason} (retry)`);
     }, delay);
 
     if (timer && typeof timer.unref === 'function') {
@@ -254,78 +254,78 @@ function scheduleTabRetry(tabInfo, reason) {
     }
 }
 
-async function releaseTrackedTab(tabInfo, reason) {
-    if (!tabInfo || tabInfo.closing) {
+async function release_tracked_tab(tab_info, reason) {
+    if (!tab_info || tab_info.closing) {
         return;
     }
 
-    tabInfo.closing = true;
-    detachDisconnectHandler(tabInfo);
+    tab_info.closing = true;
+    detach_disconnect_handler(tab_info);
 
     let closed = false;
 
     try {
-        closed = await performTabClosure(tabInfo, reason);
+        closed = await perform_tab_closure(tab_info, reason);
     } catch (err) {
-        console.error(`[WARN] Unexpected error while closing tab ${tabInfo.targetId} (${reason}):`, err);
+        console.error(`[WARN] Unexpected error while closing tab ${tab_info.target_id} (${reason}):`, err);
     } finally {
         if (closed) {
-            openTabs.delete(tabInfo.targetId);
-            maybeStopTabReaper();
+            open_tabs.delete(tab_info.target_id);
+            maybe_stop_tab_reaper();
             return;
         }
 
-        tabInfo.retryCount = (tabInfo.retryCount || 0) + 1;
-        tabInfo.closing = false;
-        attachDisconnectHandler(tabInfo);
-        scheduleTabRetry(tabInfo, reason);
-        ensureTabReaper();
+        tab_info.retry_count = (tab_info.retry_count || 0) + 1;
+        tab_info.closing = false;
+        attach_disconnect_handler(tab_info);
+        schedule_tab_retry(tab_info, reason);
+        ensure_tab_reaper();
     }
 }
 
-function runTabReaperSweep() {
+function run_tab_reaper_sweep() {
     const now = Date.now();
-    const expiredTabs = [];
+    const expired_tabs = [];
 
-    for (const tabInfo of openTabs.values()) {
-        if (tabInfo.closing) {
+    for (const tab_info of open_tabs.values()) {
+        if (tab_info.closing) {
             continue;
         }
 
-        if ((now - tabInfo.createdAt) >= config.TAB_MAX_LIFETIME_MS) {
-            expiredTabs.push(tabInfo);
+        if ((now - tab_info.created_at) >= config.TAB_MAX_LIFETIME_MS) {
+            expired_tabs.push(tab_info);
         }
     }
 
-    for (const tabInfo of expiredTabs) {
-        console.warn(`[WARN] Tab ${tabInfo.targetId} exceeded max lifetime; forcing closure.`);
-        releaseTrackedTab(tabInfo, 'max lifetime exceeded').catch((err) => {
-            console.error(`[WARN] Failed to reap tab ${tabInfo.targetId}:`, err);
+    for (const tab_info of expired_tabs) {
+        console.warn(`[WARN] Tab ${tab_info.target_id} exceeded max lifetime; forcing closure.`);
+        release_tracked_tab(tab_info, 'max lifetime exceeded').catch((err) => {
+            console.error(`[WARN] Failed to reap tab ${tab_info.target_id}:`, err);
         });
     }
 }
 
-function ensureTabReaper() {
-    if (tabReaperTimer) {
+function ensure_tab_reaper() {
+    if (tab_reaper_timer) {
         return;
     }
 
-    tabReaperTimer = setInterval(() => {
-        runTabReaperSweep();
+    tab_reaper_timer = setInterval(() => {
+        run_tab_reaper_sweep();
     }, config.TAB_SWEEP_INTERVAL_MS);
 
-    if (tabReaperTimer && typeof tabReaperTimer.unref === 'function') {
-        tabReaperTimer.unref();
+    if (tab_reaper_timer && typeof tab_reaper_timer.unref === 'function') {
+        tab_reaper_timer.unref();
     }
 }
 
-function maybeStopTabReaper() {
-    if (openTabs.size > 0 || !tabReaperTimer) {
+function maybe_stop_tab_reaper() {
+    if (open_tabs.size > 0 || !tab_reaper_timer) {
         return;
     }
 
-    clearInterval(tabReaperTimer);
-    tabReaperTimer = null;
+    clearInterval(tab_reaper_timer);
+    tab_reaper_timer = null;
 }
 
 function timeout_action(reject_func) {
@@ -1264,21 +1264,21 @@ export async function start_browser_session() {
     return CDP(get_cdp_config());
 }
 
-export async function new_tab(browser, initialUrl = 'about:blank') {
+export async function new_tab(browser, initial_url = 'about:blank') {
     const { Target } = browser;
-    const { targetId } = await Target.createTarget({
-        url: initialUrl
+    const { targetId: target_id } = await Target.createTarget({
+        url: initial_url
     });
     const tab = await CDP({
         ... {
-            target: targetId
+            target: target_id
         },
         ...get_cdp_config(),
     });
-    registerOpenTab(browser, tab, targetId);
+    register_open_tab(browser, tab, target_id);
     return {
         'tab': tab,
-        'target_id': targetId
+        'target_id': target_id
     };
 }
 
@@ -1340,22 +1340,22 @@ async function click_element_as_user(tab, selector = '#clickme') {
 }
 
 export async function close_tab(browser, tab, target_id) {
-    const trackedTab = openTabs.get(target_id);
-    if (trackedTab) {
-        await releaseTrackedTab(trackedTab, 'manual close');
+    const tracked_tab = open_tabs.get(target_id);
+    if (tracked_tab) {
+        await release_tracked_tab(tracked_tab, 'manual close');
         return;
     }
 
-    const syntheticTabInfo = {
+    const synthetic_tab_info = {
         browser: browser,
         tab: tab,
-        targetId: target_id,
-        createdAt: Date.now(),
+        target_id: target_id,
+        created_at: Date.now(),
         closing: true,
-        disconnectHandler: null
+        disconnect_handler: null
     };
 
-    await performTabClosure(syntheticTabInfo, 'manual close');
+    await perform_tab_closure(synthetic_tab_info, 'manual close');
 }
 
 export async function open_tab_to_intercept(tab, url) {
