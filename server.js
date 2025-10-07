@@ -33,6 +33,8 @@ process.on('uncaughtException', (err) => {
         process.exit(-1);
     }
 
+    console.log(`[STATUS] thermoptic has begun the intializing process...`);
+
     const http_proxy = await proxy.get_http_proxy(
         http_proxy_port,
         () => {

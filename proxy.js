@@ -21,6 +21,7 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
     // We now check if there is an on-start hook defined.
     // If there is we run it.
     if (process.env.ON_START_HOOK_FILE_PATH) {
+        console.log(`[STATUS] A thermoptic onstart hook has been declared, running hook before starting proxy server...`);
         const cdp_instance = await cdp.start_browser_session();
         try {
             await utils.run_hook_file(process.env.ON_START_HOOK_FILE_PATH, cdp_instance);
