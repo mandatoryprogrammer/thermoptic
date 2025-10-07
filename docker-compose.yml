@@ -5,8 +5,6 @@ services:
     platform: linux/amd64
     environment:
       PORT: 3003
-    ports:
-      - 3003:3003
     dns:
       - 8.8.8.8
       - 1.1.1.1
