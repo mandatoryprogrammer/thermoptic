@@ -1,66 +1,89 @@
+import { v4 as create_request_uuid } from 'uuid';
 import * as utils from './utils.js';
 import * as proxy from './proxy.js';
 import * as cdp from './cdp.js';
 import * as requestengine from './requestengine.js';
 import * as fetchgen from './fetchgen.js';
+import * as logger from './logger.js';
 
 // Top-level error handling for unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:');
-    console.error('  Promise:', promise);
-    console.error('  Reason:', reason);
-
-    // If the reason is an Error object, print the stack
-    if (reason instanceof Error) {
-        console.error('  Stack:', reason.stack);
-    }
+    const app_logger = logger.get_logger();
+    const error_payload = {
+        promise: typeof promise === 'object' ? String(promise) : promise,
+        reason: reason instanceof Error ? reason.message : reason,
+        stack: reason instanceof Error ? reason.stack : undefined
+    };
+    app_logger.error('Unhandled promise rejection captured.', error_payload);
 });
 
 // Optional: catch uncaught exceptions too
 process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
-    console.error('Stack:', err.stack);
+    const app_logger = logger.get_logger();
+    app_logger.error('Uncaught exception encountered.', {
+        message: err.message,
+        stack: err.stack
+    });
 });
 
 (async() => {
+    const app_logger = logger.get_logger();
     let http_proxy_port = 1234;
     if (process.env.HTTP_PROXY_PORT) {
         http_proxy_port = parseInt(process.env.HTTP_PROXY_PORT);
     }
 
     if (!process.env.PROXY_USERNAME || !process.env.PROXY_PASSWORD) {
-        console.error(`[ERROR] PROXY_USERNAME and PROXY_PASSWORD must be set via environment variables! Quitting...`);
+        app_logger.error('PROXY_USERNAME and PROXY_PASSWORD must be set via environment variables. Quitting...');
         process.exit(-1);
     }
 
-    console.log(`[STATUS] thermoptic has begun the intializing process...`);
+    app_logger.info('thermoptic has begun the initializing process.');
 
     const http_proxy = await proxy.get_http_proxy(
         http_proxy_port,
         () => {
-            console.log(`[STATUS] The thermoptic HTTP Proxy server is now running.`);
+            app_logger.info('The thermoptic HTTP Proxy server is now running.');
         },
         (error) => {
-            console.log(`[STATUS] The thermoptic HTTP Proxy server encountered an unexpected error:`);
-            console.error(error);
+            app_logger.error('The thermoptic HTTP Proxy server encountered an unexpected error.', {
+                message: error && error.message ? error.message : String(error)
+            });
         },
         async(proxy_request) => {
             // First things first, ensure user is properly authenticated.
+            const request_id = create_request_uuid();
+            const request_logger = logger.get_request_logger({ request_id });
+            proxy_request.request_id = request_id;
+            request_logger.info('Inbound proxy request received.', {
+                url: proxy_request.url,
+                protocol: proxy_request.protocol,
+                method: proxy_request.requestOptions.method,
+                path: proxy_request.requestOptions.path
+            });
+
             const is_authenticated = get_authentication_status(proxy_request);
 
             if (!is_authenticated) {
+                request_logger.warn('Authentication failed for inbound proxy request.');
                 return AUTHENTICATION_REQUIRED_PROXY_RESPONSE;
             }
+
+            request_logger.debug('Authentication successful for inbound proxy request.');
 
             let cdp_instance = null;
             try {
                 // We now check if there is an before-request hook defined.
                 if (process.env.BEFORE_REQUEST_HOOK_FILE_PATH) {
+                    request_logger.debug('Executing before-request hook.', {
+                        hook_file: process.env.BEFORE_REQUEST_HOOK_FILE_PATH
+                    });
                     cdp_instance = await cdp.start_browser_session();
                     await utils.run_hook_file(process.env.BEFORE_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, null);
                 }
 
                 const response = await requestengine.process_request(
+                    request_logger,
                     proxy_request.url,
                     proxy_request.protocol,
                     proxy_request.requestOptions.method,
@@ -74,9 +97,16 @@ process.on('uncaughtException', (err) => {
                     if (!cdp_instance) {
                         cdp_instance = await cdp.start_browser_session();
                     }
+                    request_logger.debug('Executing after-request hook.', {
+                        hook_file: process.env.AFTER_REQUEST_HOOK_FILE_PATH
+                    });
                     await utils.run_hook_file(process.env.AFTER_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, response);
                 }
 
+                request_logger.info('Successfully generated response for proxy request.', {
+                    status_code: response.statusCode,
+                    headers_count: response.header ? Object.keys(response.header).length : 0
+                });
                 return {
                     response: response
                 };
@@ -85,9 +115,13 @@ process.on('uncaughtException', (err) => {
                     try {
                         await cdp_instance.close();
                     } catch (closeErr) {
-                        console.error('[WARN] Failed to close CDP session:', closeErr);
+                        request_logger.warn('Failed to close CDP session.', {
+                            message: closeErr.message,
+                            stack: closeErr.stack
+                        });
                     }
                 }
+                request_logger.debug('Completed proxy request lifecycle.');
             }
         }
     );

@@ -18,11 +18,28 @@ services:
     ports:
       - 1234:1234
     environment:
+      # The thermoptic HTTP proxy port that
+      # is exposed for your HTTP clients to use.
       HTTP_PROXY_PORT: 1234
+      # The port that CDP is listening on
+      # for thermoptic to connect to
       CHROME_DEBUGGING_PORT: 3003
+      # This is the hostname that thermoptic
+      # will use to contact chrome
       CHROME_DEBUGGING_HOST: chrome
+      # The username for thermoptic HTTP proxy
       PROXY_USERNAME: changeme
+      # The password for thermoptic HTTP proxy
       PROXY_PASSWORD: changeme
+      # If you're encountering a bug then set this to true
+      # before you file an issue. It will help me debug your
+      # problem as verbose statements are printed.
+      DEBUG: false
+      # Hook that runs on proxy start
       # ON_START_HOOK_FILE_PATH: /work/hooks/onstart.js
+      # Hook that runs before each HTTP request
+      # is proxied through thermoptic
       # BEFORE_REQUEST_HOOK_FILE_PATH: /work/hooks/beforerequest.js
+      # Hook that runs after each HTTP request
+      # is proxied through thermoptic.
       # AFTER_REQUEST_HOOK_FILE_PATH: /work/hooks/afterrequest.js

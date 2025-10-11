@@ -6,6 +6,7 @@ import { writeFile, mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import { request as http_request } from 'node:http';
+import * as logger from './logger.js';
 
 const REDIRECT_STATUS_CODES = [
     301, 302, 303, 307, 308
@@ -21,6 +22,7 @@ const TEMP_RESPONSE = {
 
 const open_tabs = new Map();
 let tab_reaper_timer = null;
+const cdp_logger = logger.get_logger();
 
 function normalize_error_message(err) {
     if (!err) {
@@ -80,9 +82,15 @@ function handle_tracked_tab_disconnect(target_id) {
         return;
     }
 
-    console.warn(`[WARN] Tab ${target_id} disconnected unexpectedly; cleaning up.`);
+    cdp_logger.warn('Tab disconnected unexpectedly; cleaning up.', {
+        target_id: target_id
+    });
     release_tracked_tab(tab_info, 'cdp disconnect').catch((err) => {
-        console.error(`[WARN] Failed to cleanup tab ${target_id} after disconnect:`, err);
+        cdp_logger.error('Failed to cleanup tab after disconnect.', {
+            target_id: target_id,
+            message: err && err.message ? err.message : String(err),
+            stack: err && err.stack ? err.stack : undefined
+        });
     });
 }
 
@@ -193,9 +201,17 @@ async function perform_tab_closure(tab_info, reason) {
             if (is_target_already_closed_error(err)) {
                 target_closed = true;
             } else if (is_transient_close_error(err)) {
-                console.log(`[STATUS] Primary CDP session already closed while closing ${target_id} (${reason}); falling back.`);
+                cdp_logger.info('Primary CDP session already closed while closing target; falling back.', {
+                    target_id: target_id,
+                    reason: reason
+                });
             } else {
-                console.error(`[WARN] Failed to close target ${target_id} via existing session (${reason}):`, err);
+                cdp_logger.error('Failed to close target via existing session.', {
+                    target_id: target_id,
+                    reason: reason,
+                    message: err && err.message ? err.message : String(err),
+                    stack: err && err.stack ? err.stack : undefined
+                });
             }
         }
     }
@@ -204,9 +220,17 @@ async function perform_tab_closure(tab_info, reason) {
         const fresh_result = await close_target_with_fresh_session(target_id);
         if (!fresh_result.success && fresh_result.error) {
             if (fresh_result.transient) {
-                console.log(`[STATUS] Fallback CDP session closed early while closing ${target_id} (${reason}); trying HTTP endpoint.`);
+                cdp_logger.info('Fallback CDP session closed early; attempting HTTP endpoint.', {
+                    target_id: target_id,
+                    reason: reason
+                });
             } else if (!is_target_already_closed_error(fresh_result.error)) {
-                console.error(`[WARN] Fallback closeTarget failed for ${target_id} (${reason}):`, fresh_result.error);
+                cdp_logger.error('Fallback closeTarget failed.', {
+                    target_id: target_id,
+                    reason: reason,
+                    message: fresh_result.error && fresh_result.error.message ? fresh_result.error.message : String(fresh_result.error),
+                    stack: fresh_result.error && fresh_result.error.stack ? fresh_result.error.stack : undefined
+                });
             }
         }
         target_closed = target_closed || fresh_result.success;
@@ -215,7 +239,12 @@ async function perform_tab_closure(tab_info, reason) {
     if (!target_closed) {
         const http_result = await close_target_via_http(target_id);
         if (!http_result.success && http_result.error && !is_target_already_closed_error(http_result.error)) {
-            console.error(`[WARN] HTTP closeTarget failed for ${target_id} (${reason}):`, http_result.error);
+            cdp_logger.error('HTTP closeTarget failed.', {
+                target_id: target_id,
+                reason: reason,
+                message: http_result.error && http_result.error.message ? http_result.error.message : String(http_result.error),
+                stack: http_result.error && http_result.error.stack ? http_result.error.stack : undefined
+            });
         }
         target_closed = target_closed || http_result.success;
     }
@@ -225,9 +254,17 @@ async function perform_tab_closure(tab_info, reason) {
             await tab_info.tab.close();
         } catch (err) {
             if (is_transient_close_error(err)) {
-                console.log(`[STATUS] Tab transport already closed for ${target_id} (${reason}); CDP target should be gone.`);
+                cdp_logger.debug('Tab transport already closed; assuming target gone.', {
+                    target_id: target_id,
+                    reason: reason
+                });
             } else if (!is_target_already_closed_error(err)) {
-                console.error(`[WARN] Failed to close tab session ${target_id} (${reason}):`, err);
+                cdp_logger.error('Failed to close tab session.', {
+                    target_id: target_id,
+                    reason: reason,
+                    message: err && err.message ? err.message : String(err),
+                    stack: err && err.stack ? err.stack : undefined
+                });
             }
         }
     }
@@ -267,7 +304,12 @@ async function release_tracked_tab(tab_info, reason) {
     try {
         closed = await perform_tab_closure(tab_info, reason);
     } catch (err) {
-        console.error(`[WARN] Unexpected error while closing tab ${tab_info.target_id} (${reason}):`, err);
+        cdp_logger.error('Unexpected error while closing tab.', {
+            target_id: tab_info.target_id,
+            reason: reason,
+            message: err && err.message ? err.message : String(err),
+            stack: err && err.stack ? err.stack : undefined
+        });
     } finally {
         if (closed) {
             open_tabs.delete(tab_info.target_id);
@@ -298,9 +340,15 @@ function run_tab_reaper_sweep() {
     }
 
     for (const tab_info of expired_tabs) {
-        console.warn(`[WARN] Tab ${tab_info.target_id} exceeded max lifetime; forcing closure.`);
+        cdp_logger.warn('Tab exceeded max lifetime; forcing closure.', {
+            target_id: tab_info.target_id
+        });
         release_tracked_tab(tab_info, 'max lifetime exceeded').catch((err) => {
-            console.error(`[WARN] Failed to reap tab ${tab_info.target_id}:`, err);
+            cdp_logger.error('Failed to reap tab after max lifetime exceeded.', {
+                target_id: tab_info.target_id,
+                message: err && err.message ? err.message : String(err),
+                stack: err && err.stack ? err.stack : undefined
+            });
         });
     }
 }
@@ -341,7 +389,10 @@ async function close_browser_session(browser) {
     try {
         await browser.close();
     } catch (err) {
-        console.error('[WARN] Failed to close browser session:', err);
+        cdp_logger.error('Failed to close browser session.', {
+            message: err && err.message ? err.message : String(err),
+            stack: err && err.stack ? err.stack : undefined
+        });
     }
 }
 
@@ -451,7 +502,10 @@ async function _resource_request(url, protocol, method, path, headers, body) {
                     try {
                         await close_tab(browser, tab, new_tab_info.target_id);
                     } catch (closeErr) {
-                        console.error("Failed to close tab:", closeErr);
+                        cdp_logger.error('Failed to close tab after resource request capture.', {
+                            message: closeErr && closeErr.message ? closeErr.message : String(closeErr),
+                            stack: closeErr && closeErr.stack ? closeErr.stack : undefined
+                        });
                     }
                 });
 
@@ -470,7 +524,10 @@ export async function fetch_request(url, protocol, method, path, headers, body) 
     try {
         return await _fetch_request(url, protocol, method, path, headers, body);
     } catch (error) {
-        console.error('fetch_request caught error:', error);
+        cdp_logger.error('fetch_request caught error.', {
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+        });
         return {
             statusCode: 502,
             header: {
@@ -551,7 +608,10 @@ async function _fetch_request(url, protocol, method, path, headers, body) {
                         await close_tab(browser, tab, new_tab_info.target_id);
                     } catch (finalError) {
                         // Avoid unhandled rejection in finally
-                        console.error("Failed to close tab:", finalError);
+                        cdp_logger.error('Failed to close tab after fetch request capture.', {
+                            message: finalError && finalError.message ? finalError.message : String(finalError),
+                            stack: finalError && finalError.stack ? finalError.stack : undefined
+                        });
                     }
                 }
 
@@ -786,7 +846,10 @@ async function _form_submission(url, protocol, method, path, headers, body, stat
                     try {
                         await close_tab(browser, tab, new_tab_info.target_id);
                     } catch (closeErr) {
-                        console.error("Failed to close tab:", closeErr);
+                        cdp_logger.error('Failed to close tab after form submission capture.', {
+                            message: closeErr && closeErr.message ? closeErr.message : String(closeErr),
+                            stack: closeErr && closeErr.stack ? closeErr.stack : undefined
+                        });
                     }
                 });
 
@@ -901,7 +964,12 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
                     const { url } = request;
                     const is_request = (responseStatusCode === undefined);
 
-                    console.log(`[STATUS] Intercepted request ${request.url} - is request? ${is_request}`);
+                    cdp_logger.debug('Intercepted request during navigation capture.', {
+                        url: request.url,
+                        is_request: is_request,
+                        resource_type: resourceType,
+                        frame_id: frameId
+                    });
 
                     // Is this a preflight OPTIONS request? 
                     // If so, we'll just mock a response that allows the next request to continue
@@ -909,7 +977,9 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
                     // as normal for anti-fingerprinting reasons. It's a tricky tradeoff that we
                     // should allow the user to configure.
                     if (is_request && request.method && request.method.toLowerCase() === 'options' && !is_cors_preflight_handled) {
-                        console.log(`[STATUS] Pre-flight OPTIONS request detected, mocking a passing response...`);
+                        cdp_logger.debug('Pre-flight OPTIONS request detected, mocking a passing response.', {
+                            url: request.url
+                        });
 
                         const headers = fetchgen.convert_headers_map_to_array(request.headers);
                         // Pull Origin header so we now what to reply with to pass the CORS check
@@ -940,7 +1010,9 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
 
                     // Catch the base request and swap it
                     if (is_request && !base_page_handled) {
-                        console.log(`[STATUS] Mocking pseudo response to set up request...`);
+                        cdp_logger.debug('Mocking pseudo response to set up request.', {
+                            url: request.url
+                        });
                         base_page_handled = true;
                         await Fetch.fulfillRequest({
                             requestId,
@@ -968,7 +1040,10 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
 
                     // Catch the initiated response
                     if (!is_request) {
-                        console.log(`[STATUS] Caught response from our synthetic <form>/fetch() call.`);
+                        cdp_logger.debug('Captured response from synthetic submission.', {
+                            url: request.url,
+                            status_code: responseStatusCode
+                        });
 
                         let body = '';
                         if (!REDIRECT_STATUS_CODES.includes(responseStatusCode)) {
@@ -1050,7 +1125,10 @@ export async function manual_browser_visit(url) {
         try {
             await close_tab(browser, tab, new_tab_info.target_id);
         } catch (closeErr) {
-            console.error("Failed to close tab:", closeErr);
+            cdp_logger.error('Failed to close tab after manual browser visit.', {
+                message: closeErr && closeErr.message ? closeErr.message : String(closeErr),
+                stack: closeErr && closeErr.stack ? closeErr.stack : undefined
+            });
         } finally {
             await close_browser_session(browser);
         }
@@ -1083,7 +1161,9 @@ async function _manual_browser_visit(tab, url) {
                 // Close the tab, delete the bookmark
                 async function clean_up() {
                     if (bookmark_id_to_cleanup === -1) {
-                        console.error(`[ERROR] Bookmark ID is -1, something went wrong!`);
+                        cdp_logger.error('Bookmark ID is -1 during cleanup.', {
+                            context: 'manual_browser_visit_cleanup'
+                        });
                         return;
                     }
                     await delete_chrome_bookmark_by_id(bookmark_id_to_cleanup);
@@ -1208,14 +1288,19 @@ export async function delete_chrome_bookmark_by_id(id) {
         try {
             await close_tab(browser, tab, new_tab_info.target_id);
         } catch (closeErr) {
-            console.error("Failed to close tab:", closeErr);
+            cdp_logger.error('Failed to close tab after deleting bookmark by id.', {
+                message: closeErr && closeErr.message ? closeErr.message : String(closeErr),
+                stack: closeErr && closeErr.stack ? closeErr.stack : undefined
+            });
         } finally {
             await close_browser_session(browser);
         }
     }
 }
 async function _delete_chrome_bookmark_by_id(tab, id) {
-    console.log(`[STATUS] Deleting bookmark ID ${id}`);
+    cdp_logger.debug('Deleting bookmark by id.', {
+        bookmark_id: id
+    });
     const { Runtime, Fetch, Page } = tab;
     await Runtime.enable();
     await Page.enable();
@@ -1336,7 +1421,11 @@ async function click_element_as_user(tab, selector = '#clickme') {
         clickCount: 1,
     });
 
-    console.log(`[STATUS] Clicked ${selector} at (${center_x}, ${center_y}) as a real user`);
+    cdp_logger.debug('Clicked element to simulate user interaction.', {
+        selector: selector,
+        x: center_x,
+        y: center_y
+    });
 }
 
 export async function close_tab(browser, tab, target_id) {

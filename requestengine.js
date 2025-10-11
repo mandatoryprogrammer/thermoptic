@@ -82,7 +82,7 @@ const MATCH_RULES = [{
 
     e.g. Is it CORS simple? Does it have `Sec-Fetch-User: ?1`?, etc
 */
-export async function process_request(url, protocol, method, path, headers, body) {
+export async function process_request(request_logger, url, protocol, method, path, headers, body) {
     // Check if the client is sending cookies, if so we'll set them on the browser
     // We set them narrowly for the specific URL defined in the request.
     const cookie_header = fetchgen.get_header_value_ignore_case('Cookie', headers);
@@ -94,13 +94,25 @@ export async function process_request(url, protocol, method, path, headers, body
             url, // assumes 'url' is in scope
         }));
 
+        request_logger.debug('Applying inbound cookies to browser session.', {
+            cookies_count: cookies_array.length
+        });
         await cdp.set_browser_cookies(cookies_array);
     }
 
     // Pull struct of the request's finer details for routing
     const request_details = get_request_details(url, protocol, method, path, headers, body);
 
-    console.log(`[STATUS][${protocol}][${method}][${path}][Simple?:${request_details.cors_simple}][RR:${request_details.requester_resource}] Got inbound request to clean...`);
+    request_logger.info('Derived request metadata for routing.', {
+        protocol: protocol,
+        method: method,
+        path: path,
+        cors_simple: request_details.cors_simple,
+        requester_resource: request_details.requester_resource,
+        requester_method: request_details.requester_method,
+        requester_site_type: request_details.requester_site_type,
+        is_user_navigation: request_details.is_user_navigation
+    });
 
     const matching_rules = MATCH_RULES.filter(rule => {
         let is_match = true;
@@ -112,8 +124,10 @@ export async function process_request(url, protocol, method, path, headers, body
             if (rule.requirements[rule_key] === request_details[rule_key]) {
                 return
             }
-            // console.log(`[DEBUG] Rule "${rule.name}" don't match because of key ${rule_key}:`);
-            // console.log(`Rule value: ${rule.requirements[rule_key]} !== ${request_details[rule_key]}`);
+            // request_logger.debug(`Rule "${rule.name}" does not match because of key ${rule_key}.`, {
+            //     expected: rule.requirements[rule_key],
+            //     actual: request_details[rule_key]
+            // });
             is_match = false;
         });
         return is_match;
@@ -122,15 +136,21 @@ export async function process_request(url, protocol, method, path, headers, body
     // We have a matching route, send it off to be handled in Chrome.
     if (matching_rules.length > 0) {
         const matching_rule = matching_rules[0];
-        console.log(`[DEBUG] Request matched rule "${matching_rule.name}"!`)
-        return matching_rule.route(url, protocol, method, path, headers, body);
+        request_logger.debug('Request matched routing rule.', {
+            rule_name: matching_rule.name
+        });
+        const route_response = await matching_rule.route(url, protocol, method, path, headers, body);
+        request_logger.debug('Route execution completed.', {
+            rule_name: matching_rule.name,
+            status_code: route_response.statusCode
+        });
+        return route_response;
     }
 
-    console.log(`[WARN] No request router found, request details are:`);
-    console.log(request_details);
-
-    console.log(`[WARN] Headers from unrouted request:`);
-    console.log(headers);
+    request_logger.warn('No request router found for inbound request.', {
+        request_details: request_details,
+        headers: headers
+    });
 
     return {
         statusCode: 500,

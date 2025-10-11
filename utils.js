@@ -1,7 +1,9 @@
 import { stat } from 'fs/promises';
 import { resolve } from 'path';
+import * as logger from './logger.js';
 
 export async function run_hook_file(hook_file_path, cdp, request, response) {
+    const utils_logger = logger.get_logger();
     async function file_exists(path) {
         try {
             const stats = await stat(path);
@@ -14,17 +16,20 @@ export async function run_hook_file(hook_file_path, cdp, request, response) {
     const abs_hook_file_path = resolve(hook_file_path);
 
     if (await file_exists(abs_hook_file_path)) {
-        const hook_module = await
-        import (abs_hook_file_path);
+        const hook_module = await import(abs_hook_file_path);
 
         if (typeof hook_module.hook !== 'function') {
-            console.error(`[ERROR] "hook" export not found or not a function in ${abs_hook_file_path}`);
+            utils_logger.error('"hook" export not found or not a function for hook file.', {
+                hook_file: abs_hook_file_path
+            });
             process.exit(1);
         }
 
         await hook_module.hook(cdp, request, response);
     } else {
-        console.error(`[ERROR] Hook file does not exist or is not a file: ${abs_hook_file_path}`);
+        utils_logger.error('Hook file does not exist or is not a file.', {
+            hook_file: abs_hook_file_path
+        });
         process.exit(1);
     }
 }

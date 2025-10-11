@@ -1,5 +1,5 @@
 import CDP from 'chrome-remote-interface';
-import * as utils from '../utils.js';
+import * as logger from '../logger.js';
 
 function get_cdp_config() {
     let port = 9222;
@@ -40,6 +40,7 @@ function sleep(ms) {
 // e.g. Visit a page and have the Cloudflare "check"
 // load and be passed so you can do cloaked requests.
 export async function hook(cdp) {
+    const hook_logger = logger.get_logger();
     /*
         This is an example that loads a page with Cloudflare's JavaScript
         challenge on it and waits for it to finish before closing the tab.
@@ -63,7 +64,7 @@ export async function hook(cdp) {
     await Page.navigate({ url: 'https://example.com/' });
     await Page.loadEventFired();
 
-    console.log(`[STATUS] Waiting until Cloudflare JavaScript challenge is complete...`);
+    hook_logger.info('Waiting until Cloudflare JavaScript challenge is complete.');
     while (true) {
         let outerHTML = false;
         // If a fast page-nav occurs we may have throw an exception
@@ -77,12 +78,14 @@ export async function hook(cdp) {
         }
 
         if (outerHTML.includes(captcha_solve_required_text)) {
-            console.log(`[STATUS] A Cloudflare turnstile CAPTCHA has been thrown, attempting to click through it...`);
+            hook_logger.info('A Cloudflare turnstile CAPTCHA has appeared, attempting to click through it.');
 
             // Wait some fuzzy amount of time before clicking so we're
             // not superhuman with it :) 
             const fuzzy_wait_ms = rand_int((1000 * 1.5), (1000 * 5));
-            console.log(`[STATUS] Waiting ${fuzzy_wait_ms} milliseconds so we don't appear super human...`);
+            hook_logger.debug('Waiting before clicking CAPTCHA to avoid robotic timing.', {
+                wait_ms: fuzzy_wait_ms
+            });
             await sleep(fuzzy_wait_ms);
 
             const { root: { nodeId: documentNodeId } } = await DOM.getDocument({ depth: -1, pierce: true });
@@ -129,7 +132,10 @@ export async function hook(cdp) {
             // Vertical center: average of top and bottom y-coordinates
             const click_y = ((y_top_left + y_bottom_left) / 2) + y_fuzz;
 
-            console.log('[STATUS] Clicking CAPTCHA checkbox at coordinates: ', click_x, click_y);
+            hook_logger.debug('Clicking CAPTCHA checkbox.', {
+                click_x: click_x,
+                click_y: click_y
+            });
 
             // Then dispatch the mouse event
             await Input.dispatchMouseEvent({
@@ -148,13 +154,13 @@ export async function hook(cdp) {
                 clickCount: 1
             });
 
-            console.log(`[STATUS] Clicked checkbox, waiting a bit for that to work...`);
+            hook_logger.debug('Clicked CAPTCHA checkbox, waiting briefly for verification.');
             // Now we wait for the checking action to do something before we rescan
             await sleep((1000 * 2));
         }
 
         if (!outerHTML.includes(javascript_check_text) && !outerHTML.includes(captcha_solve_required_text)) {
-            console.log(`[STATUS] Passed Cloudflare's JavaScript check! Moving along...`);
+            hook_logger.info('Passed Cloudflare JavaScript check, continuing startup.');
             break;
         }
     }
