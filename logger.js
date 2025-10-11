@@ -18,9 +18,9 @@ const debug_enabled = resolve_debug_enabled();
 const level_tag_map = {
     error: '[ERROR]',
     warn: '[WARN]',
-    info: '[STATUS]',
-    http: '[STATUS]',
-    verbose: '[STATUS]',
+    info: '[INFO]',
+    http: '[INFO]',
+    verbose: '[INFO]',
     debug: '[DEBUG]',
     silly: '[DEBUG]'
 };

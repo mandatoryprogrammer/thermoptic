@@ -3,6 +3,16 @@
 const forge = require('node-forge');
 const Util = require('./util');
 
+function isDebugEnabled() {
+  if (typeof process.env.DEBUG === 'undefined') {
+    return false;
+  }
+  const normalized = String(process.env.DEBUG).trim().toLowerCase();
+  return !(!normalized || normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no');
+}
+
+const debugEnabled = isDebugEnabled();
+
 let defaultAttrs = [
   { name: 'countryName', value: 'CN' },
   { name: 'organizationName', value: 'EasyCert' },
@@ -34,7 +44,9 @@ function getKeysAndCert(serialNumber) {
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = (Math.floor(Math.random() * 100000) + '');
-  console.log(`serial #${cert.serialNumber}`)
+  if (debugEnabled) {
+    console.log(`serial #${cert.serialNumber}`)
+  }
   var now = Date.now();
   // compatible with apple's updated cert policy: https://support.apple.com/en-us/HT210176
   cert.validity.notBefore = new Date(now - 24 * 60 * 60 * 1000); // 1 day before

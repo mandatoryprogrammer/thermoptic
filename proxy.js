@@ -17,7 +17,7 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
         //throttle: 10000,
         forceProxyHttps: true,
         wsIntercept: false,
-        silent: false
+        silent: !logger.is_debug_enabled()
     };
 
     // We now check if there is an on-start hook defined.
@@ -28,7 +28,7 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
         });
         const cdp_instance = await cdp.start_browser_session();
         try {
-            await utils.run_hook_file(process.env.ON_START_HOOK_FILE_PATH, cdp_instance);
+            await utils.run_hook_file(process.env.ON_START_HOOK_FILE_PATH, cdp_instance, null, null, proxy_logger);
         } finally {
             try {
                 await cdp_instance.close();

@@ -55,7 +55,7 @@ process.on('uncaughtException', (err) => {
             const request_id = create_request_uuid();
             const request_logger = logger.get_request_logger({ request_id });
             proxy_request.request_id = request_id;
-            request_logger.debug('Inbound proxy request received.', {
+            request_logger.info('Inbound proxy request received.', {
                 url: proxy_request.url,
                 protocol: proxy_request.protocol,
                 method: proxy_request.requestOptions.method,
@@ -72,14 +72,17 @@ process.on('uncaughtException', (err) => {
             request_logger.debug('Authentication successful for inbound proxy request.');
 
             let cdp_instance = null;
+            let request_completed = false;
+            let response_status_code = null;
+            let request_error = null;
             try {
                 // We now check if there is an before-request hook defined.
                 if (process.env.BEFORE_REQUEST_HOOK_FILE_PATH) {
-                    request_logger.debug('Executing before-request hook.', {
+                    request_logger.info('Executing before-request hook.', {
                         hook_file: process.env.BEFORE_REQUEST_HOOK_FILE_PATH
                     });
                     cdp_instance = await cdp.start_browser_session();
-                    await utils.run_hook_file(process.env.BEFORE_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, null);
+                    await utils.run_hook_file(process.env.BEFORE_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, null, request_logger);
                 }
 
                 const response = await requestengine.process_request(
@@ -97,19 +100,28 @@ process.on('uncaughtException', (err) => {
                     if (!cdp_instance) {
                         cdp_instance = await cdp.start_browser_session();
                     }
-                    request_logger.debug('Executing after-request hook.', {
+                    request_logger.info('Executing after-request hook.', {
                         hook_file: process.env.AFTER_REQUEST_HOOK_FILE_PATH
                     });
-                    await utils.run_hook_file(process.env.AFTER_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, response);
+                    await utils.run_hook_file(process.env.AFTER_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, response, request_logger);
                 }
 
-                request_logger.debug('Successfully generated response for proxy request.', {
+                request_logger.info('Successfully generated response for proxy request.', {
                     status_code: response.statusCode,
                     headers_count: response.header ? Object.keys(response.header).length : 0
                 });
+                request_completed = true;
+                response_status_code = response.statusCode;
                 return {
                     response: response
                 };
+            } catch (err) {
+                request_error = {
+                    message: err instanceof Error ? err.message : String(err),
+                    stack: err instanceof Error ? err.stack : undefined
+                };
+                request_logger.error('Proxy request failed.', request_error);
+                throw err;
             } finally {
                 if (cdp_instance) {
                     try {
@@ -121,7 +133,14 @@ process.on('uncaughtException', (err) => {
                         });
                     }
                 }
-                request_logger.debug('Completed proxy request lifecycle.');
+                const lifecycle_summary = {
+                    success: request_completed,
+                    status_code: response_status_code
+                };
+                if (request_error) {
+                    lifecycle_summary.error = request_error;
+                }
+                request_logger.info('Completed proxy request lifecycle.', lifecycle_summary);
             }
         }
     );

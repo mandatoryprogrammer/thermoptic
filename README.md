@@ -159,6 +159,8 @@ These environment variables specify how `thermoptic` should be configured when i
 
 `AFTER_REQUEST_HOOK_FILE_PATH`: Custom Node code to run after a request has been proxied. Often this is useful to do things like clean up cookies that have been set by the client via `Cookie` header.
 
+`DEBUG`: Controls proxy logging verbosity. When unset or set to `false` only info/warn/error statements are printed. Any other non-empty value (for example `DEBUG=1`) enables detailed per-request debug tracing, including request UUIDs and CDP routing progress.
+
 ## Handling browser JavaScript fingerprinting with `thermoptic` hooks
 
 `thermoptic` allows you to configure custom scripting in order to perform browser actions when:
