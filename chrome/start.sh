@@ -22,7 +22,7 @@ while true; do
     --remote-debugging-address=0.0.0.0 \
     --no-sandbox \
     --user-data-dir=/tmp/chrome-profile \
-    "https://example.com"
+    "about:blank"
 
   echo "Chrome crashed or exited. Restarting in 2 seconds..."
   sleep 2
