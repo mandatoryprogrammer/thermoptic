@@ -1,6 +1,19 @@
 import winston from 'winston';
 
-const debug_enabled = typeof process.env.DEBUG !== 'undefined' && process.env.DEBUG !== '0' && process.env.DEBUG !== 'false';
+function resolve_debug_enabled() {
+    if (typeof process.env.DEBUG === 'undefined') {
+        return false;
+    }
+
+    const normalized = String(process.env.DEBUG).trim().toLowerCase();
+    if (normalized === '' || normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no') {
+        return false;
+    }
+
+    return true;
+}
+
+const debug_enabled = resolve_debug_enabled();
 
 const level_tag_map = {
     error: '[ERROR]',

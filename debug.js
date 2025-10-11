@@ -1,10 +1,13 @@
 import net from 'net';
+import * as logger from './logger.js';
+
+const debug_logger = logger.get_logger();
 
 const server = net.createServer((socket) => {
     socket.on('data', (chunk) => {
-        console.log('--- Raw HTTP Request ---');
-        console.log(chunk.toString()); // This is the full raw request, byte-for-byte
-        console.log('------------------------\n');
+        debug_logger.info('Raw HTTP request captured.', {
+            payload: chunk.toString()
+        });
 
         const body = 'Request received\n';
         const response =
@@ -22,11 +25,16 @@ const server = net.createServer((socket) => {
     });
 
     socket.on('error', (err) => {
-        console.error('Socket error:', err);
+        debug_logger.error('Socket error in raw HTTP dump server.', {
+            message: err.message,
+            stack: err.stack
+        });
     });
 });
 
 const PORT = 3333;
 server.listen(PORT, () => {
-    console.log(`Raw HTTP dump server listening on http://localhost:${PORT}`);
+    debug_logger.info('Raw HTTP dump server listening.', {
+        url: `http://localhost:${PORT}`
+    });
 });
