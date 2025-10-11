@@ -103,7 +103,7 @@ export async function process_request(request_logger, url, protocol, method, pat
     // Pull struct of the request's finer details for routing
     const request_details = get_request_details(url, protocol, method, path, headers, body);
 
-    request_logger.info('Derived request metadata for routing.', {
+    request_logger.debug('Derived request metadata for routing.', {
         protocol: protocol,
         method: method,
         path: path,

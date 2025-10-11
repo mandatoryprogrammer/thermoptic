@@ -55,7 +55,7 @@ process.on('uncaughtException', (err) => {
             const request_id = create_request_uuid();
             const request_logger = logger.get_request_logger({ request_id });
             proxy_request.request_id = request_id;
-            request_logger.info('Inbound proxy request received.', {
+            request_logger.debug('Inbound proxy request received.', {
                 url: proxy_request.url,
                 protocol: proxy_request.protocol,
                 method: proxy_request.requestOptions.method,
@@ -103,7 +103,7 @@ process.on('uncaughtException', (err) => {
                     await utils.run_hook_file(process.env.AFTER_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, response);
                 }
 
-                request_logger.info('Successfully generated response for proxy request.', {
+                request_logger.debug('Successfully generated response for proxy request.', {
                     status_code: response.statusCode,
                     headers_count: response.header ? Object.keys(response.header).length : 0
                 });
