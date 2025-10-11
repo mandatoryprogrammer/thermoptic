@@ -22,6 +22,7 @@ COPY requestengine.js /work/
 COPY routes.js /work/
 COPY utils.js /work/
 COPY wait-for-cdp.js /work/
+COPY logger.js /work/
 
 COPY docker-entrypoint.sh /work/
 RUN chmod +x /work/docker-entrypoint.sh

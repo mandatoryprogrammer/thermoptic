@@ -3,6 +3,7 @@
 // Optionally configure poll interval and timeout via CDP_POLL_INTERVAL_MS and CDP_STARTUP_TIMEOUT_MS.
 
 import http from 'http';
+import * as logger from './logger.js';
 
 const host = process.env.CHROME_DEBUGGING_HOST || '127.0.0.1';
 const port = Number.parseInt(process.env.CHROME_DEBUGGING_PORT || '9222', 10);
@@ -12,6 +13,7 @@ const startupTimeoutMs = process.env.CDP_STARTUP_TIMEOUT_MS
   ? Number.parseInt(process.env.CDP_STARTUP_TIMEOUT_MS, 10)
   : null;
 const deadline = startupTimeoutMs ? Date.now() + startupTimeoutMs : null;
+const wait_logger = logger.get_logger();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -63,22 +65,30 @@ function checkCdp() {
 
 async function main() {
   // Quick banner
-  console.log(
-    `[STATUS] Waiting for CDP at http://${host}:${port} (interval=${pollIntervalMs}ms${deadline ? `, timeout=${startupTimeoutMs}ms` : ''})`
-  );
+  wait_logger.info('Waiting for CDP availability.', {
+    host,
+    port,
+    poll_interval_ms: pollIntervalMs,
+    startup_timeout_ms: startupTimeoutMs
+  });
 
   // Loop until available or timeout (if set)
   while (true) {
     const ok = await checkCdp();
     if (ok) {
-      console.log(`[READY] CDP is available at http://${host}:${port}`);
+      wait_logger.info('CDP is available.', {
+        host,
+        port
+      });
       process.exit(0);
     }
 
     if (deadline && Date.now() > deadline) {
-      console.error(
-        `[ERROR] Timed out waiting for CDP at http://${host}:${port}`
-      );
+      wait_logger.error('Timed out waiting for CDP.', {
+        host,
+        port,
+        startup_timeout_ms: startupTimeoutMs
+      });
       process.exit(1);
     }
 
@@ -87,6 +97,9 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[ERROR] Unexpected failure while waiting for CDP:', err);
+  wait_logger.error('Unexpected failure while waiting for CDP.', {
+    message: err.message,
+    stack: err.stack
+  });
   process.exit(1);
 });

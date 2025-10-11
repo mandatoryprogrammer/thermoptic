@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import request_module from 'request';
+import * as logger from '../logger.js';
+
+const script_logger = logger.get_logger();
 
 const DEFAULT_TARGET_URL = 'https://example.com/';
 const DEFAULT_TOTAL_REQUESTS = 20;
@@ -186,8 +189,17 @@ async function main() {
     const traced_proxy = mask_proxy_credentials(proxy_url);
     const should_trace = Boolean(options.trace);
 
-    console.log(`[STATUS] Starting request load: ${total_requests} requests to ${target_url} with concurrency ${concurrency}.`);
-    console.log(`[STATUS] Proxy: ${traced_proxy}. Timeout: ${timeout_ms} ms. Method: ${method}. TLS verify: ${verify_tls ? 'enabled' : 'disabled'}.`);
+    script_logger.info('Starting request load.', {
+        total_requests: total_requests,
+        target_url: target_url,
+        concurrency: concurrency
+    });
+    script_logger.info('Request load configuration.', {
+        proxy: traced_proxy,
+        timeout_ms: timeout_ms,
+        method: method,
+        tls_verify_enabled: verify_tls
+    });
 
     const summary = {
         attempted: total_requests,
@@ -208,15 +220,33 @@ async function main() {
     const success_rate = summary.succeeded / total_requests * 100;
     const latency_stats = compute_latency_stats(summary.durations);
 
-    console.log(`[STATUS] Completed in ${elapsed_ms} ms. Successes: ${summary.succeeded}, Failures: ${summary.failed}, Success rate: ${Number.isNaN(success_rate) ? '0.00' : success_rate.toFixed(2)}%.`);
+    script_logger.info('Completed request load.', {
+        elapsed_ms: elapsed_ms,
+        successes: summary.succeeded,
+        failures: summary.failed,
+        success_rate: Number.isNaN(success_rate) ? 0 : Number(success_rate.toFixed(2))
+    });
     if (latency_stats) {
-        console.log(`[STATUS] Latency (ms) min=${latency_stats.min.toFixed(1)} p50=${latency_stats.p50.toFixed(1)} p90=${latency_stats.p90.toFixed(1)} p99=${latency_stats.p99.toFixed(1)} max=${latency_stats.max.toFixed(1)}.`);
+        script_logger.info('Latency metrics (ms).', {
+            min: Number(latency_stats.min.toFixed(1)),
+            p50: Number(latency_stats.p50.toFixed(1)),
+            p90: Number(latency_stats.p90.toFixed(1)),
+            p99: Number(latency_stats.p99.toFixed(1)),
+            max: Number(latency_stats.max.toFixed(1))
+        });
     }
 
     if (summary.failed > 0) {
-        console.error(`[ERROR] ${summary.failed} requests failed. Showing up to ${Math.min(summary.failed, summary.failures.length)} summaries.`);
+        script_logger.error('Request load completed with failures.', {
+            failed_requests: summary.failed,
+            reported_failures: Math.min(summary.failed, summary.failures.length)
+        });
         summary.failures.forEach((failure) => {
-            console.error(`  Request ${failure.request_index}: ${failure.error_message}${failure.status_code ? ` (status ${failure.status_code})` : ''}`);
+            script_logger.error('Failure summary.', {
+                request_index: failure.request_index,
+                error_message: failure.error_message,
+                status_code: failure.status_code
+            });
         });
         process.exitCode = 1;
     }
@@ -232,7 +262,11 @@ async function main() {
                 if (!should_trace) {
                     return;
                 }
-                console.error(`[TRACE] Unexpected error in worker for request ${request_index}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+                script_logger.error('Unexpected error in worker.', {
+                    request_index: request_index,
+                    error: error instanceof Error ? error.message : String(error),
+                    stack: error instanceof Error ? error.stack : undefined
+                });
             });
         }
     }
@@ -317,29 +351,24 @@ async function main() {
     }
 
     function log_trace_failure(failure, proxy) {
-        console.error(`[TRACE] Request ${failure.request_index} failed after ${failure.duration} ms.`);
-        console.error(`[TRACE] Error: ${failure.error_message}.`);
-        console.error(`[TRACE] Proxy: ${proxy}.`);
-        console.error(`[TRACE] Request options: ${JSON.stringify(failure.request_options, null, 2)}`);
-        if (failure.status_code !== undefined) {
-            console.error(`[TRACE] Response status: ${failure.status_code}.`);
-        }
-        if (failure.response_headers) {
-            console.error(`[TRACE] Response headers: ${JSON.stringify(failure.response_headers, null, 2)}`);
-        }
-        if (failure.response_body !== undefined) {
-            console.error(`[TRACE] Response body: ${failure.response_body}`);
-        }
-        if (failure.error_stack) {
-            console.error(`[TRACE] Error stack: ${failure.error_stack}`);
-        }
+        script_logger.error('Trace failure.', {
+            request_index: failure.request_index,
+            duration_ms: failure.duration,
+            error_message: failure.error_message,
+            status_code: failure.status_code,
+            proxy: proxy,
+            request_options: failure.request_options,
+            response_headers: failure.response_headers,
+            response_body: failure.response_body,
+            error_stack: failure.error_stack
+        });
     }
 }
 
 main().catch((error) => {
-    console.error(`[ERROR] ${error instanceof Error ? error.message : String(error)}`);
-    if (error instanceof Error && error.stack) {
-        console.error(error.stack);
-    }
+    script_logger.error('Unhandled error during concurrent request load.', {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
+    });
     process.exitCode = 1;
 });

@@ -1,4 +1,7 @@
 import { escape, parse as parseQuery } from 'querystring';
+import * as logger from './logger.js';
+
+const fetchgen_logger = logger.get_logger();
 
 // Not ideal, should probably fix at some point
 function escape_html(str) {
@@ -105,7 +108,12 @@ export function has_query_param_with_value(url_string, param, expected_value) {
         const url = new URL(url_string);
         return url.searchParams.get(param) === expected_value;
     } catch (err) {
-        console.error('Invalid URL:', err.message);
+        fetchgen_logger.error('Invalid URL while checking query parameter value.', {
+            url: url_string,
+            param: param,
+            expected_value: expected_value,
+            message: err.message
+        });
         return false;
     }
 }
@@ -433,9 +441,14 @@ export function generate_form_code(url, method, content_type, body, autosubmit) 
 
     } else if (normalizedContentType === 'multipart/form-data') {
         // Special case
-        console.log(`[DEBUG] Multipart form received!`);
-        const result = parse_multipart_form_data(body, content_type)
-        console.log(result);
+        fetchgen_logger.debug('Multipart form received.', {
+            content_type: content_type
+        });
+        const result = parse_multipart_form_data(body, content_type);
+        fetchgen_logger.debug('Parsed multipart form data.', {
+            field_count: result.length
+        });
+        fetchgen_logger.warn('Exiting after parsing multipart form data for debugging.');
         process.exit();
     }
 
