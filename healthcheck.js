@@ -105,6 +105,32 @@ function safe_string(value, fallback) {
     return str;
 }
 
+function infer_service_hostname(fallback) {
+    const compose_alias = safe_string(process.env.COMPOSE_SERVICE, null) || safe_string(process.env.SERVICE_NAME, null);
+    if (compose_alias) {
+        return compose_alias;
+    }
+
+    const container_name = safe_string(process.env.CONTAINER_NAME, null);
+    if (container_name) {
+        return container_name;
+    }
+
+    const hostname = safe_string(process.env.HOSTNAME, '');
+    if (hostname) {
+        const hyphen_parts = hostname.split('-');
+        if (hyphen_parts.length >= 3) {
+            return hyphen_parts[hyphen_parts.length - 2];
+        }
+        const underscore_parts = hostname.split('_');
+        if (underscore_parts.length >= 3) {
+            return underscore_parts[underscore_parts.length - 2];
+        }
+    }
+
+    return fallback;
+}
+
 function build_restart_url(default_port) {
     const host = safe_string(process.env.CHROME_RESTART_HOST, 'chrome');
     const control_port = safe_string(process.env.CHROME_CONTROL_PORT, default_port);
@@ -122,7 +148,8 @@ function build_health_config() {
     const response_content_type = safe_string(process.env.HEALTHCHECK_RESPONSE_CONTENT_TYPE, DEFAULT_HEALTHCHECK_RESPONSE_CONTENT_TYPE);
 
     const target_protocol = safe_string(process.env.HEALTHCHECK_TARGET_PROTOCOL, 'http');
-    const target_host = safe_string(process.env.HEALTHCHECK_TARGET_HOST, 'thermoptic');
+    const default_target_host = detect_container_environment() ? infer_service_hostname('thermoptic') : '127.0.0.1';
+    const target_host = safe_string(process.env.HEALTHCHECK_TARGET_HOST, default_target_host);
     const target_port = parse_integer(process.env.HEALTHCHECK_TARGET_PORT, endpoint_port, 1);
     const target_path = normalize_path(process.env.HEALTHCHECK_TARGET_PATH, endpoint_path);
 
