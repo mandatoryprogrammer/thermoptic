@@ -16,6 +16,7 @@ RUN cp /root/.anyproxy/certificates/rootCA.key /work/ssl/
 COPY cdp.js /work/
 COPY config.js /work/
 COPY fetchgen.js /work/
+COPY healthcheck.js /work/
 COPY server.js /work/
 COPY proxy.js /work/
 COPY requestengine.js /work/

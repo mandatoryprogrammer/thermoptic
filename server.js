@@ -5,6 +5,7 @@ import * as cdp from './cdp.js';
 import * as requestengine from './requestengine.js';
 import * as fetchgen from './fetchgen.js';
 import * as logger from './logger.js';
+import { start_health_monitor } from './healthcheck.js';
 
 // Top-level error handling for unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
@@ -145,6 +146,15 @@ process.on('uncaughtException', (err) => {
         }
     );
     http_proxy.start();
+
+    try {
+        await start_health_monitor();
+    } catch (monitor_error) {
+        app_logger.error('Failed to start health monitor.', {
+            message: monitor_error instanceof Error ? monitor_error.message : String(monitor_error),
+            stack: monitor_error instanceof Error ? monitor_error.stack : undefined
+        });
+    }
 })();
 
 const AUTHENTICATION_REQUIRED_PROXY_RESPONSE = {
