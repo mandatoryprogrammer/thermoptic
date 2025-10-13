@@ -139,7 +139,7 @@ export async function process_request(request_logger, url, protocol, method, pat
         request_logger.debug('Request matched routing rule.', {
             rule_name: matching_rule.name
         });
-        const route_response = await matching_rule.route(url, protocol, method, path, headers, body);
+        const route_response = await matching_rule.route(request_logger, url, protocol, method, path, headers, body);
         request_logger.debug('Route execution completed.', {
             rule_name: matching_rule.name,
             status_code: route_response.statusCode

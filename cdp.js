@@ -520,11 +520,13 @@ async function _resource_request(url, protocol, method, path, headers, body) {
 }
 
 // Requests which are kicked off by fetch()
-export async function fetch_request(url, protocol, method, path, headers, body) {
+export async function fetch_request(url, protocol, method, path, headers, body, request_logger = null) {
+    const active_logger = request_logger || cdp_logger;
+
     try {
-        return await _fetch_request(url, protocol, method, path, headers, body);
+        return await _fetch_request(url, protocol, method, path, headers, body, active_logger);
     } catch (error) {
-        cdp_logger.error('fetch_request caught error.', {
+        active_logger.error('fetch_request caught error.', {
             message: error instanceof Error ? error.message : String(error),
             stack: error instanceof Error ? error.stack : undefined
         });
@@ -538,7 +540,7 @@ export async function fetch_request(url, protocol, method, path, headers, body) 
     }
 }
 
-async function _fetch_request(url, protocol, method, path, headers, body) {
+async function _fetch_request(url, protocol, method, path, headers, body, active_logger) {
     return new Promise((resolve, reject) => {
         let settled = false;
 
@@ -608,7 +610,7 @@ async function _fetch_request(url, protocol, method, path, headers, body) {
                         await close_tab(browser, tab, new_tab_info.target_id);
                     } catch (finalError) {
                         // Avoid unhandled rejection in finally
-                        cdp_logger.error('Failed to close tab after fetch request capture.', {
+                        active_logger.error('Failed to close tab after fetch request capture.', {
                             message: finalError && finalError.message ? finalError.message : String(finalError),
                             stack: finalError && finalError.stack ? finalError.stack : undefined
                         });
