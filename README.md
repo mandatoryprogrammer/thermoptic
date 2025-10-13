@@ -180,3 +180,9 @@ export async function hook(cdp) {
 ```
 
 For an example implementation, see the [`./hooks/onstart.js`](https://github.com/mandatoryprogrammer/thermoptic/blob/main/hooks/onstart.js) file which [bypasses the Cloudflare turnstile CAPTCHA](https://github.com/mandatoryprogrammer/thermoptic/blob/main/tutorials/turnstile/cloudflare-turnstile-bypass.md) (and other Cloudflare anti-bot checks).
+
+## Security
+
+Note that at this time `thermoptic` is only meant to be used with HTTP clients you explicitly trust. It's *not* meant to be exposed to untrusted users.
+
+For any security vulnerabilities please send a report to me at `mandatory@` Gmail.

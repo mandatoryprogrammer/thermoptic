@@ -133,73 +133,21 @@ function record_failure(summary, failure) {
     }
 }
 
-async function main() {
-    const program = new Command();
-    program
-        .name('concurrent-request-load')
-        .description('Issue concurrent HTTP requests through the Thermoptic proxy using the request library.')
-        .option('--url <url>', 'Target URL to fetch', DEFAULT_TARGET_URL)
-        .option('--requests <count>', 'Total number of requests to send', String(DEFAULT_TOTAL_REQUESTS))
-        .option('--concurrency <count>', 'Maximum concurrent in-flight requests', String(DEFAULT_CONCURRENCY))
-        .option('--timeout <ms>', 'Request timeout in milliseconds', String(DEFAULT_TIMEOUT_MS))
-        .option('--method <method>', 'HTTP method to use', 'GET')
-        .option('--body <body>', 'Request body payload')
-        .option('--header <header>', 'Additional header in "Name: value" format (can be repeated)', collect_header, [])
-        .option('--proxy-host <host>', 'Thermoptic proxy host', DEFAULT_PROXY_HOST)
-        .option('--proxy-port <port>', 'Thermoptic proxy port', String(DEFAULT_PROXY_PORT))
-        .option('--proxy-user <username>', 'Thermoptic proxy username', DEFAULT_PROXY_USER)
-        .option('--proxy-pass <password>', 'Thermoptic proxy password', DEFAULT_PROXY_PASS)
-        .option('--trace', 'Log detailed request and response information for failures')
-        .option('--verify', 'Enable TLS validation for upstream targets');
-
-    program.parse(process.argv);
-    const options = program.opts();
-
-    const total_requests = parse_positive_int(options.requests, 'requests');
-    let concurrency = parse_positive_int(options.concurrency, 'concurrency');
-    if (concurrency > total_requests) {
-        concurrency = total_requests;
-    }
-    const timeout_ms = parse_positive_int(options.timeout, 'timeout');
-    const proxy_port = parse_positive_int(options.proxyPort, 'proxy-port');
-    const method = options.method ? options.method.toUpperCase() : 'GET';
-    const header_overrides = parse_headers(options.header ?? []);
-    const target_url = options.url;
-
-    let parsed_target;
-    try {
-        parsed_target = new URL(target_url);
-    } catch (error) {
-        throw new Error(`Invalid target URL: "${target_url}".`);
-    }
-
-    const headers = {
-        ...DEFAULT_HEADERS,
-        ...header_overrides
-    };
-    headers.Referer = headers.Referer ?? `https://${parsed_target.host}/`;
-
-    const proxy_url = `http://${encodeURIComponent(options.proxyUser)}:${encodeURIComponent(options.proxyPass)}@${options.proxyHost}:${proxy_port}`;
-    const verify_tls = Boolean(options.verify);
-    const request_factory = request_module.defaults({
-        proxy: proxy_url,
-        timeout: timeout_ms,
-        strictSSL: verify_tls
-    });
-    const traced_proxy = mask_proxy_credentials(proxy_url);
-    const should_trace = Boolean(options.trace);
-
-    script_logger.info('Starting request load.', {
-        total_requests: total_requests,
-        target_url: target_url,
-        concurrency: concurrency
-    });
-    script_logger.info('Request load configuration.', {
-        proxy: traced_proxy,
-        timeout_ms: timeout_ms,
-        method: method,
-        tls_verify_enabled: verify_tls
-    });
+async function run_load(total_requests, context) {
+    const {
+        concurrency,
+        timeout_ms,
+        verify_tls,
+        method,
+        target_url,
+        headers,
+        body,
+        request_factory,
+        traced_proxy,
+        proxy_url,
+        should_trace,
+        suppress_info
+    } = context;
 
     const summary = {
         attempted: total_requests,
@@ -210,30 +158,45 @@ async function main() {
     };
 
     let next_index = 0;
-
-    const workers = Array.from({ length: concurrency }, () => worker());
     const start_time = Date.now();
 
+    if (!suppress_info) {
+        script_logger.info('Starting request load.', {
+            total_requests: total_requests,
+            target_url: target_url,
+            concurrency: concurrency
+        });
+        script_logger.info('Request load configuration.', {
+            proxy: traced_proxy,
+            timeout_ms: timeout_ms,
+            method: method,
+            tls_verify_enabled: verify_tls
+        });
+    }
+
+    const workers = Array.from({ length: concurrency }, () => worker());
     await Promise.all(workers);
 
     const elapsed_ms = Date.now() - start_time;
-    const success_rate = summary.succeeded / total_requests * 100;
+    const success_rate = summary.attempted === 0 ? 0 : Number((summary.succeeded / summary.attempted * 100).toFixed(2));
     const latency_stats = compute_latency_stats(summary.durations);
 
-    script_logger.info('Completed request load.', {
-        elapsed_ms: elapsed_ms,
-        successes: summary.succeeded,
-        failures: summary.failed,
-        success_rate: Number.isNaN(success_rate) ? 0 : Number(success_rate.toFixed(2))
-    });
-    if (latency_stats) {
-        script_logger.info('Latency metrics (ms).', {
-            min: Number(latency_stats.min.toFixed(1)),
-            p50: Number(latency_stats.p50.toFixed(1)),
-            p90: Number(latency_stats.p90.toFixed(1)),
-            p99: Number(latency_stats.p99.toFixed(1)),
-            max: Number(latency_stats.max.toFixed(1))
+    if (!suppress_info) {
+        script_logger.info('Completed request load.', {
+            elapsed_ms: elapsed_ms,
+            successes: summary.succeeded,
+            failures: summary.failed,
+            success_rate: success_rate
         });
+        if (latency_stats) {
+            script_logger.info('Latency metrics (ms).', {
+                min: Number(latency_stats.min.toFixed(1)),
+                p50: Number(latency_stats.p50.toFixed(1)),
+                p90: Number(latency_stats.p90.toFixed(1)),
+                p99: Number(latency_stats.p99.toFixed(1)),
+                max: Number(latency_stats.max.toFixed(1))
+            });
+        }
     }
 
     if (summary.failed > 0) {
@@ -248,8 +211,14 @@ async function main() {
                 status_code: failure.status_code
             });
         });
-        process.exitCode = 1;
     }
+
+    return {
+        summary,
+        elapsed_ms,
+        success_rate,
+        latency_stats
+    };
 
     async function worker() {
         while (true) {
@@ -275,11 +244,11 @@ async function main() {
         const request_options = build_request_options({
             timeout: timeout_ms,
             strictSSL: verify_tls
-        }, method, target_url, headers, options.body);
+        }, method, target_url, headers, body);
         const started_at = Date.now();
 
         try {
-            const { response, body } = await run_request(request_options);
+            const { response, response_body } = await run_request(request_options);
             const status_code = response?.statusCode ?? 0;
             if (status_code >= 200 && status_code < 400) {
                 summary.succeeded += 1;
@@ -292,7 +261,7 @@ async function main() {
                 duration: Date.now() - started_at,
                 request_options,
                 response,
-                response_body: body
+                response_body
             });
             summary.failed += 1;
             record_failure(summary, failure);
@@ -326,7 +295,7 @@ async function main() {
                     reject(error);
                     return;
                 }
-                resolve({ response, body });
+                resolve({ response, response_body: body });
             });
         });
     }
@@ -362,6 +331,229 @@ async function main() {
             response_body: failure.response_body,
             error_stack: failure.error_stack
         });
+    }
+}
+
+async function main() {
+    const program = new Command();
+    program
+        .name('concurrent-request-load')
+        .description('Issue concurrent HTTP requests through the Thermoptic proxy using the request library.')
+        .option('--url <url>', 'Target URL to fetch', DEFAULT_TARGET_URL)
+        .option('--requests <count>', 'Total number of requests to send (per batch when using continuous mode)', String(DEFAULT_TOTAL_REQUESTS))
+        .option('--concurrency <count>', 'Maximum concurrent in-flight requests', String(DEFAULT_CONCURRENCY))
+        .option('--timeout <ms>', 'Request timeout in milliseconds', String(DEFAULT_TIMEOUT_MS))
+        .option('--method <method>', 'HTTP method to use', 'GET')
+        .option('--body <body>', 'Request body payload')
+        .option('--header <header>', 'Additional header in "Name: value" format (can be repeated)', collect_header, [])
+        .option('--proxy-host <host>', 'Thermoptic proxy host', DEFAULT_PROXY_HOST)
+        .option('--proxy-port <port>', 'Thermoptic proxy port', String(DEFAULT_PROXY_PORT))
+        .option('--proxy-user <username>', 'Thermoptic proxy username', DEFAULT_PROXY_USER)
+        .option('--proxy-pass <password>', 'Thermoptic proxy password', DEFAULT_PROXY_PASS)
+        .option('--trace', 'Log detailed request and response information for failures')
+        .option('--verify', 'Enable TLS validation for upstream targets')
+        .option('--continuous', 'Continuously run batches until interrupted')
+        .option('--report-interval <seconds>', 'Seconds between throughput reports while in continuous mode', '60');
+
+    program.parse(process.argv);
+    const options = program.opts();
+
+    const total_requests = parse_positive_int(options.requests, 'requests');
+    let concurrency = parse_positive_int(options.concurrency, 'concurrency');
+    const timeout_ms = parse_positive_int(options.timeout, 'timeout');
+    const proxy_port = parse_positive_int(options.proxyPort, 'proxy-port');
+    const method = options.method ? options.method.toUpperCase() : 'GET';
+    const header_overrides = parse_headers(options.header ?? []);
+    const target_url = options.url;
+
+    let parsed_target;
+    try {
+        parsed_target = new URL(target_url);
+    } catch (error) {
+        throw new Error(`Invalid target URL: "${target_url}".`);
+    }
+
+    const headers = {
+        ...DEFAULT_HEADERS,
+        ...header_overrides
+    };
+    headers.Referer = headers.Referer ?? `https://${parsed_target.host}/`;
+
+    const proxy_url = `http://${encodeURIComponent(options.proxyUser)}:${encodeURIComponent(options.proxyPass)}@${options.proxyHost}:${proxy_port}`;
+    const verify_tls = Boolean(options.verify);
+    const request_factory = request_module.defaults({
+        proxy: proxy_url,
+        timeout: timeout_ms,
+        strictSSL: verify_tls
+    });
+    const traced_proxy = mask_proxy_credentials(proxy_url);
+    const should_trace = Boolean(options.trace);
+    const continuous_mode = Boolean(options.continuous);
+
+    if (concurrency > total_requests) {
+        concurrency = total_requests;
+    }
+
+    const context_base = {
+        concurrency,
+        timeout_ms,
+        verify_tls,
+        method,
+        target_url,
+        headers,
+        body: options.body,
+        request_factory,
+        traced_proxy,
+        proxy_url,
+        should_trace
+    };
+
+    if (!continuous_mode) {
+        const result = await run_load(total_requests, { ...context_base, suppress_info: false });
+        if (result.summary.failed > 0) {
+            process.exitCode = 1;
+        }
+        return;
+    }
+
+    const report_interval_seconds = parse_positive_int(options.reportInterval ?? '60', 'report-interval');
+    const report_interval_ms = report_interval_seconds * 1000;
+
+    script_logger.info('Continuous load mode enabled.', {
+        requests_per_batch: total_requests,
+        concurrency: concurrency,
+        report_interval_seconds: report_interval_seconds,
+        proxy: traced_proxy,
+        target_url: target_url
+    });
+
+    let stop_requested = false;
+    let force_exit = false;
+    const start_epoch = Date.now();
+
+    process.on('SIGINT', () => {
+        if (force_exit) {
+            script_logger.warn('Force exit requested. Terminating immediately.');
+            process.exit(130);
+        }
+        if (stop_requested) {
+            force_exit = true;
+            script_logger.warn('Second interrupt received. Force exiting.');
+            return;
+        }
+        stop_requested = true;
+        script_logger.warn('Interrupt received. Completing current batch before exiting.');
+    });
+
+    process.on('SIGTERM', () => {
+        if (!stop_requested) {
+            script_logger.warn('SIGTERM received. Completing current batch before exiting.');
+        }
+        stop_requested = true;
+    });
+
+    const aggregator = {
+        window_started_at: Date.now(),
+        batches: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        durations: []
+    };
+
+    const totals = {
+        batches: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0
+    };
+
+    while (true) {
+        const batch_result = await run_load(total_requests, { ...context_base, suppress_info: true });
+        totals.batches += 1;
+        totals.attempted += batch_result.summary.attempted;
+        totals.succeeded += batch_result.summary.succeeded;
+        totals.failed += batch_result.summary.failed;
+
+        aggregator.batches += 1;
+        aggregator.attempted += batch_result.summary.attempted;
+        aggregator.succeeded += batch_result.summary.succeeded;
+        aggregator.failed += batch_result.summary.failed;
+        if (batch_result.summary.durations.length > 0) {
+            aggregator.durations.push(...batch_result.summary.durations);
+        }
+
+        emit_report(false);
+
+        if (stop_requested) {
+            break;
+        }
+    }
+
+    emit_report(true);
+
+    const total_elapsed_ms = Date.now() - start_epoch;
+    const total_success_rate = totals.attempted === 0 ? 0 : Number((totals.succeeded / totals.attempted * 100).toFixed(2));
+    const total_throughput = total_elapsed_ms > 0 ? Number((totals.succeeded / (total_elapsed_ms / 1000)).toFixed(2)) : 0;
+
+    script_logger.info('Continuous load stopped.', {
+        batches: totals.batches,
+        attempted: totals.attempted,
+        succeeded: totals.succeeded,
+        failed: totals.failed,
+        success_rate: total_success_rate,
+        throughput_rps: total_throughput,
+        elapsed_ms: total_elapsed_ms
+    });
+
+    if (totals.failed > 0) {
+        process.exitCode = 1;
+    }
+
+    function emit_report(force) {
+        const now = Date.now();
+        const window_elapsed_ms = now - aggregator.window_started_at;
+        if (!force && window_elapsed_ms < report_interval_ms) {
+            return;
+        }
+        if (aggregator.batches === 0 && aggregator.attempted === 0) {
+            aggregator.window_started_at = now;
+            aggregator.durations = [];
+            return;
+        }
+
+        const window_success_rate = aggregator.attempted === 0 ? 0 : Number((aggregator.succeeded / aggregator.attempted * 100).toFixed(2));
+        const window_throughput = window_elapsed_ms > 0 ? Number((aggregator.succeeded / (window_elapsed_ms / 1000)).toFixed(2)) : 0;
+        const latency_stats = compute_latency_stats(aggregator.durations);
+
+        const payload = {
+            window_ms: window_elapsed_ms,
+            batches: aggregator.batches,
+            attempted: aggregator.attempted,
+            succeeded: aggregator.succeeded,
+            failed: aggregator.failed,
+            success_rate: window_success_rate,
+            throughput_rps: window_throughput
+        };
+
+        if (latency_stats) {
+            payload.latency_ms = {
+                min: Number(latency_stats.min.toFixed(1)),
+                p50: Number(latency_stats.p50.toFixed(1)),
+                p90: Number(latency_stats.p90.toFixed(1)),
+                p99: Number(latency_stats.p99.toFixed(1)),
+                max: Number(latency_stats.max.toFixed(1))
+            };
+        }
+
+        script_logger.info('Continuous load metrics.', payload);
+
+        aggregator.window_started_at = now;
+        aggregator.batches = 0;
+        aggregator.attempted = 0;
+        aggregator.succeeded = 0;
+        aggregator.failed = 0;
+        aggregator.durations = [];
     }
 }
 
