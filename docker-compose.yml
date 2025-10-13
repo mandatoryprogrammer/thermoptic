@@ -5,6 +5,8 @@ services:
     platform: linux/amd64
     environment:
       PORT: 3003
+      CHROME_CONTROL_PORT: 9223
+      CHROME_CONTROL_COOLDOWN_MS: 5000
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -27,6 +29,8 @@ services:
       # This is the hostname that thermoptic
       # will use to contact chrome
       CHROME_DEBUGGING_HOST: chrome
+      CHROME_CONTROL_PORT: 9223
+      THERMOPTIC_CONTAINER_RUNTIME: "true"
       # The username for thermoptic HTTP proxy
       PROXY_USERNAME: changeme
       # The password for thermoptic HTTP proxy
@@ -43,3 +47,5 @@ services:
       # Hook that runs after each HTTP request
       # is proxied through thermoptic.
       # AFTER_REQUEST_HOOK_FILE_PATH: /work/hooks/afterrequest.js
+      HEALTHCHECK_ENDPOINT_PORT: 8085
+      HEALTHCHECK_ENDPOINT_PATH: /__thermoptic_health
