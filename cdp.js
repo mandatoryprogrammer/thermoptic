@@ -1,4 +1,5 @@
 import CDP from 'chrome-remote-interface';
+import { createRequire } from 'module';
 import * as fetchgen from './fetchgen.js';
 import * as utils from './utils.js';
 import * as config from './config.js';
@@ -20,9 +21,233 @@ const TEMP_RESPONSE = {
     body: ''
 }
 
+const esm_require = createRequire(import.meta.url);
+const chrome_remote_interface_entry = esm_require.resolve('chrome-remote-interface');
+const cri_require = createRequire(chrome_remote_interface_entry);
+const WebSocket = cri_require('ws');
+
 const open_tabs = new Map();
 let tab_reaper_timer = null;
 const cdp_logger = logger.get_logger();
+
+ensure_unexpected_response_logging();
+
+const MAX_CAPTURED_UNEXPECTED_RESPONSE_BODY_BYTES = 256 * 1024;
+const UNEXPECTED_RESPONSE_CAPTURE_TIMEOUT_MS = 2000;
+const MAX_CDP_RETRY_ATTEMPTS = 3;
+const CDP_RETRY_DELAY_MS = 200;
+
+function ensure_unexpected_response_logging() {
+    const patch_flag = Symbol.for('thermoptic.ws.unexpected_response_patch');
+    if (WebSocket[patch_flag]) {
+        return;
+    }
+
+    const original_emit = WebSocket.prototype.emit;
+
+    WebSocket.prototype.emit = function patched_emit(event, ...args) {
+        if (event === 'unexpected-response' && args.length >= 2) {
+            try {
+                capture_unexpected_response_details(this, args[0], args[1]);
+            } catch (err) {
+                cdp_logger.warn('Failed to capture unexpected-response context.', {
+                    message: err instanceof Error ? err.message : String(err),
+                    stack: err instanceof Error ? err.stack : undefined
+                });
+            }
+        }
+
+        return original_emit.call(this, event, ...args);
+    };
+
+    WebSocket[patch_flag] = true;
+}
+
+function capture_unexpected_response_details(websocket, req, res) {
+    if (!res || typeof res !== 'object') {
+        return;
+    }
+
+    const body_chunks = [];
+    let captured_bytes = 0;
+    let total_bytes = 0;
+    let body_truncated = false;
+    let finalized = false;
+    let timeout_handle = null;
+    let request_error_listener = null;
+    let request_close_listener = null;
+
+    const response_headers = clone_plain_object(res.headers);
+    const response_raw_headers = Array.isArray(res.rawHeaders) ? [...res.rawHeaders] : undefined;
+    const request_headers = clone_plain_object(resolve_request_headers(req));
+    const request_raw_header = req && typeof req._header === 'string' ? req._header : undefined;
+
+    const base_context = {
+        websocket_url: typeof websocket?._url === 'string' ? websocket._url : undefined,
+        http_version: res.httpVersion ? res.httpVersion : undefined,
+        status_code: typeof res.statusCode === 'number' ? res.statusCode : undefined,
+        status_message: typeof res.statusMessage === 'string' ? res.statusMessage : undefined,
+        headers: response_headers,
+        raw_headers: response_raw_headers,
+        request_method: req && typeof req.method === 'string' ? req.method : undefined,
+        request_path: req && typeof req.path === 'string' ? req.path : undefined,
+        request_headers: request_headers,
+        request_raw: request_raw_header
+    };
+
+    function cleanup() {
+        res.removeListener('data', on_data);
+        res.removeListener('end', on_end);
+        res.removeListener('close', on_close);
+        res.removeListener('error', on_error);
+
+        if (req && typeof req.removeListener === 'function') {
+            if (request_error_listener) {
+                req.removeListener('error', request_error_listener);
+            }
+            if (request_close_listener) {
+                req.removeListener('close', request_close_listener);
+            }
+        }
+
+        if (timeout_handle) {
+            clearTimeout(timeout_handle);
+            timeout_handle = null;
+        }
+    }
+
+    function finalize(trigger, stream_err = null) {
+        if (finalized) {
+            return;
+        }
+        finalized = true;
+        cleanup();
+
+        if (total_bytes > captured_bytes) {
+            body_truncated = true;
+        }
+
+        const captured_buffer = body_chunks.length > 0 ? Buffer.concat(body_chunks) : Buffer.alloc(0);
+        const body_utf8 = captured_buffer.toString('utf8');
+        const body_base64 = captured_buffer.length > 0 ? captured_buffer.toString('base64') : '';
+
+        const log_payload = {
+            ...base_context,
+            body_utf8: body_utf8,
+            body_base64: body_base64 || undefined,
+            body_captured_bytes: captured_buffer.length,
+            body_total_bytes: total_bytes,
+            body_truncated: body_truncated || undefined,
+            capture_trigger: trigger
+        };
+
+        if (stream_err) {
+            log_payload.stream_error = stream_err instanceof Error ? stream_err.message : String(stream_err);
+        }
+
+        cdp_logger.error('CDP websocket handshake failed with unexpected HTTP response.', log_payload);
+    }
+
+    function on_data(chunk) {
+        if (chunk === undefined || chunk === null) {
+            return;
+        }
+
+        let buffer_chunk;
+        if (Buffer.isBuffer(chunk)) {
+            buffer_chunk = chunk;
+        } else if (typeof chunk === 'string') {
+            buffer_chunk = Buffer.from(chunk);
+        } else {
+            try {
+                buffer_chunk = Buffer.from(chunk);
+            } catch (err) {
+                buffer_chunk = Buffer.from(String(chunk));
+            }
+        }
+
+        total_bytes += buffer_chunk.length;
+
+        if (captured_bytes >= MAX_CAPTURED_UNEXPECTED_RESPONSE_BODY_BYTES) {
+            body_truncated = true;
+            return;
+        }
+
+        const remaining_capacity = MAX_CAPTURED_UNEXPECTED_RESPONSE_BODY_BYTES - captured_bytes;
+        if (buffer_chunk.length <= remaining_capacity) {
+            body_chunks.push(buffer_chunk);
+            captured_bytes += buffer_chunk.length;
+        } else {
+            body_chunks.push(buffer_chunk.subarray(0, remaining_capacity));
+            captured_bytes += remaining_capacity;
+            body_truncated = true;
+        }
+    }
+
+    function on_end() {
+        finalize('response-end');
+    }
+
+    function on_close() {
+        finalize('response-close');
+    }
+
+    function on_error(err) {
+        finalize('response-error', err);
+    }
+
+    res.on('data', on_data);
+    res.once('end', on_end);
+    res.once('close', on_close);
+    res.once('error', on_error);
+
+    if (req && typeof req.once === 'function') {
+        request_error_listener = (err) => finalize('request-error', err);
+        request_close_listener = () => finalize('request-close');
+        req.once('error', request_error_listener);
+        req.once('close', request_close_listener);
+    }
+
+    timeout_handle = setTimeout(() => finalize('timeout'), UNEXPECTED_RESPONSE_CAPTURE_TIMEOUT_MS);
+    if (timeout_handle && typeof timeout_handle.unref === 'function') {
+        timeout_handle.unref();
+    }
+}
+
+function resolve_request_headers(req) {
+    if (!req || typeof req !== 'object') {
+        return undefined;
+    }
+
+    if (typeof req.getHeaders === 'function') {
+        try {
+            const headers = req.getHeaders();
+            if (headers && typeof headers === 'object') {
+                return headers;
+            }
+        } catch (_err) {
+            // Fall back to req.headers below.
+        }
+    }
+
+    if (req.headers && typeof req.headers === 'object') {
+        return req.headers;
+    }
+
+    return undefined;
+}
+
+function clone_plain_object(source) {
+    if (!source || typeof source !== 'object') {
+        return undefined;
+    }
+
+    const result = {};
+    for (const [key, value] of Object.entries(source)) {
+        result[key] = value;
+    }
+    return result;
+}
 
 function normalize_error_message(err) {
     if (!err) {
@@ -52,6 +277,129 @@ function is_transient_close_error(err) {
     }
 
     return false;
+}
+
+function is_unexpected_http_response_error(err) {
+    if (!err) {
+        return false;
+    }
+
+    const error_code = typeof err === 'object' && err && typeof err.code === 'string' ? err.code.toLowerCase() : undefined;
+    if (error_code === 'unexpected_server_response') {
+        return true;
+    }
+
+    const message = normalize_error_message(err);
+    const lowered_message = message.toLowerCase();
+
+    if (lowered_message.includes('unexpected server response')) {
+        return true;
+    }
+
+    const has_unexpected_phrase = lowered_message.includes('unexpected response');
+    const mentions_handshake = lowered_message.includes('handshake');
+    const mentions_websocket = lowered_message.includes('websocket');
+
+    const status_candidates = [];
+
+    if (typeof err === 'object' && err && typeof err.statusCode === 'number') {
+        status_candidates.push(err.statusCode);
+    }
+
+    if (typeof err === 'object' && err && typeof err.status === 'number') {
+        status_candidates.push(err.status);
+    }
+
+    if (typeof err === 'object' && err && err.response && typeof err.response.statusCode === 'number') {
+        status_candidates.push(err.response.statusCode);
+    }
+
+    if (status_candidates.length > 0) {
+        const has_server_error = status_candidates.some((status) => status >= 500 && status < 600);
+        if (has_server_error && (has_unexpected_phrase || mentions_handshake || mentions_websocket)) {
+            return true;
+        }
+    }
+
+    if (has_unexpected_phrase && mentions_handshake) {
+        return true;
+    }
+
+    return false;
+}
+
+function should_retry_cdp_error(err) {
+    if (!err) {
+        return false;
+    }
+
+    if (is_unexpected_http_response_error(err)) {
+        return true;
+    }
+
+    const message = normalize_error_message(err);
+    if (!message) {
+        return false;
+    }
+
+    const lowered_message = message.toLowerCase();
+
+    if (lowered_message === 'timeout') {
+        return false;
+    }
+
+    if (is_transient_close_error(err)) {
+            return true;
+    }
+
+    if (lowered_message.includes('socket hang up') || lowered_message.includes('econnreset')) {
+        return true;
+    }
+
+    const error_code = typeof err === 'object' && err && typeof err.code === 'string' ? err.code.toLowerCase() : undefined;
+    if (error_code === 'econnreset') {
+        return true;
+    }
+
+    return false;
+}
+
+async function execute_with_cdp_retries(operation_name, active_logger, operation) {
+    let last_error = null;
+
+    for (let attempt = 0; attempt < MAX_CDP_RETRY_ATTEMPTS; attempt += 1) {
+        try {
+            return await operation();
+        } catch (error) {
+            last_error = error;
+
+            const attempt_number = attempt + 1;
+            const retry_allowed = should_retry_cdp_error(error) && attempt < (MAX_CDP_RETRY_ATTEMPTS - 1);
+
+            if (!retry_allowed) {
+                break;
+            }
+
+            if (active_logger && typeof active_logger.warn === 'function') {
+                active_logger.warn('Retrying CDP workflow after transient failure.', {
+                    operation: operation_name,
+                    attempt: attempt_number,
+                    next_attempt: attempt_number + 1,
+                    message: error instanceof Error ? error.message : String(error)
+                });
+            }
+
+            if (CDP_RETRY_DELAY_MS > 0) {
+                await utils.wait(CDP_RETRY_DELAY_MS);
+            }
+        }
+    }
+
+    if (last_error instanceof Error) {
+        throw last_error;
+    }
+
+    throw new Error(String(last_error));
 }
 
 function attach_disconnect_handler(tab_info) {
@@ -396,6 +744,98 @@ async function close_browser_session(browser) {
     }
 }
 
+async function cleanup_failed_new_tab(target_agent, target_id, creation_error) {
+    const creation_message = normalize_error_message(creation_error);
+    const creation_stack = creation_error instanceof Error ? creation_error.stack : undefined;
+
+    cdp_logger.warn('Cleaning up target after new tab creation failure.', {
+        target_id: target_id,
+        message: creation_message || undefined,
+        stack: creation_stack
+    });
+
+    let target_closed = false;
+
+    if (target_agent && typeof target_agent.closeTarget === 'function') {
+        try {
+            await target_agent.closeTarget({ targetId: target_id });
+            target_closed = true;
+        } catch (close_err) {
+            if (is_target_already_closed_error(close_err)) {
+                target_closed = true;
+            } else if (is_transient_close_error(close_err)) {
+                cdp_logger.info('Primary CDP session closed while cleaning failed new tab; retrying cleanup.', {
+                    target_id: target_id
+                });
+            } else {
+                cdp_logger.error('Failed to close target via existing session after new tab failure.', {
+                    target_id: target_id,
+                    message: close_err && close_err.message ? close_err.message : String(close_err),
+                    stack: close_err && close_err.stack ? close_err.stack : undefined
+                });
+            }
+        }
+    }
+
+    if (target_closed) {
+        return;
+    }
+
+    let fallback_result = {
+        success: false
+    };
+    try {
+        const candidate_result = await close_target_with_fresh_session(target_id);
+        if (candidate_result) {
+            fallback_result = candidate_result;
+        }
+    } catch (fallback_err) {
+        fallback_result = {
+            success: false,
+            error: fallback_err
+        };
+    }
+
+    if (fallback_result.success) {
+        return;
+    }
+
+    if (fallback_result.transient) {
+        cdp_logger.info('Fallback CDP session closed early while cleaning failed new tab; attempting HTTP endpoint.', {
+            target_id: target_id
+        });
+    } else if (fallback_result.error && !is_target_already_closed_error(fallback_result.error)) {
+        cdp_logger.error('Fallback closeTarget failed after new tab failure.', {
+            target_id: target_id,
+            message: fallback_result.error && fallback_result.error.message ? fallback_result.error.message : String(fallback_result.error),
+            stack: fallback_result.error && fallback_result.error.stack ? fallback_result.error.stack : undefined
+        });
+    }
+
+    let http_result = {
+        success: false
+    };
+    try {
+        const candidate_http_result = await close_target_via_http(target_id);
+        if (candidate_http_result) {
+            http_result = candidate_http_result;
+        }
+    } catch (http_err) {
+        http_result = {
+            success: false,
+            error: http_err
+        };
+    }
+
+    if (!http_result.success && http_result.error && !is_target_already_closed_error(http_result.error)) {
+        cdp_logger.error('HTTP closeTarget failed after new tab failure.', {
+            target_id: target_id,
+            message: http_result.error && http_result.error.message ? http_result.error.message : String(http_result.error),
+            stack: http_result.error && http_result.error.stack ? http_result.error.stack : undefined
+        });
+    }
+}
+
 /*
     https://chromedevtools.github.io/devtools-protocol/tot/Storage/#method-setCookies 
     https://chromedevtools.github.io/devtools-protocol/tot/Network/#type-CookieParam
@@ -422,12 +862,22 @@ export async function set_browser_cookies(cookies_array) {
 // different for each of these inclusion types.
 export async function resource_request(url, protocol, method, path, headers, body) {
     try {
-        return await _resource_request(url, protocol, method, path, headers, body);
+        return await execute_with_cdp_retries('resource_request', cdp_logger, async () => {
+            return await _resource_request(url, protocol, method, path, headers, body);
+        });
     } catch (error) {
+        const failure_message = error instanceof Error ? error.message : String(error);
+        const failure_stack = error instanceof Error ? error.stack : undefined;
+
+        cdp_logger.error('resource_request caught error.', {
+            message: failure_message,
+            stack: failure_stack
+        });
+
         return {
             statusCode: 502,
             header: {
-                [config.ERROR_HEADER_NAME]: `Request error: ${error instanceof Error ? error.message : String(error)}`
+                [config.ERROR_HEADER_NAME]: `Request error: ${failure_message}`
             },
             body: ''
         };
@@ -524,16 +974,22 @@ export async function fetch_request(url, protocol, method, path, headers, body, 
     const active_logger = request_logger || cdp_logger;
 
     try {
-        return await _fetch_request(url, protocol, method, path, headers, body, active_logger);
-    } catch (error) {
-        active_logger.error('fetch_request caught error.', {
-            message: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : undefined
+        return await execute_with_cdp_retries('fetch_request', active_logger, async () => {
+            return await _fetch_request(url, protocol, method, path, headers, body, active_logger);
         });
+    } catch (error) {
+        const failure_message = error instanceof Error ? error.message : String(error);
+        const failure_stack = error instanceof Error ? error.stack : undefined;
+
+        active_logger.error('fetch_request caught error.', {
+            message: failure_message,
+            stack: failure_stack
+        });
+
         return {
             statusCode: 502,
             header: {
-                [config.ERROR_HEADER_NAME]: `Request error: ${error instanceof Error ? error.message : error}`
+                [config.ERROR_HEADER_NAME]: `Request error: ${failure_message}`
             },
             body: ''
         };
@@ -713,26 +1169,38 @@ function get_page_url_from_headers(url, headers) {
 // For requests that are browser <form> submissions
 // (both automatic and manual)
 export async function form_submission(url, protocol, method, path, headers, body) {
-    // Clean up the directory where temp files are written (if any)
-    let state = {
-        file_hold_directory: false,
+    const attempt_form_submission = async () => {
+        const state = {
+            file_hold_directory: false,
+        };
+
+        try {
+            return await _form_submission(url, protocol, method, path, headers, body, state);
+        } finally {
+            if (state.file_hold_directory) {
+                await rm(state.file_hold_directory, { recursive: true, force: true });
+            }
+        }
     };
 
     try {
-        const result = await _form_submission(url, protocol, method, path, headers, body, state);
-        return result;
+        return await execute_with_cdp_retries('form_submission', cdp_logger, attempt_form_submission);
     } catch (error) {
+        const failure_message = error instanceof Error ? error.message : String(error);
+        const failure_stack = error instanceof Error ? error.stack : undefined;
+
+        cdp_logger.error('form_submission caught error.', {
+            message: failure_message,
+            stack: failure_stack
+        });
+
         return {
             statusCode: 502,
             header: {
-                [config.ERROR_HEADER_NAME]: `Request error: ${error instanceof Error ? error.message : String(error)}`
+                [config.ERROR_HEADER_NAME]: `Request error: ${failure_message}`
             },
             body: ''
         };
-    } finally {
-        if (state.file_hold_directory) {
-            await rm(state.file_hold_directory, { recursive: true, force: true });
-        }
     }
 }
 
@@ -1108,32 +1576,45 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
 // If you understand why I'm doing it in this way then you too know suffering.
 // We are brothers, forged in pain, galvanized by the heat and pressure of hell.
 export async function manual_browser_visit(url) {
-    const browser = await start_browser_session();
-    const new_tab_info = await new_tab(browser, 'chrome://bookmarks-side-panel.top-chrome/');
-    const tab = new_tab_info.tab;
+    const attempt_visit = async () => {
+        const browser = await start_browser_session();
+        const new_tab_info = await new_tab(browser, 'chrome://bookmarks-side-panel.top-chrome/');
+        const tab = new_tab_info.tab;
+
+        try {
+            return await _manual_browser_visit(tab, url);
+        } finally {
+            try {
+                await close_tab(browser, tab, new_tab_info.target_id);
+            } catch (close_err) {
+                cdp_logger.error('Failed to close tab after manual browser visit.', {
+                    message: close_err && close_err.message ? close_err.message : String(close_err),
+                    stack: close_err && close_err.stack ? close_err.stack : undefined
+                });
+            } finally {
+                await close_browser_session(browser);
+            }
+        }
+    };
 
     try {
-        const result = await _manual_browser_visit(tab, url);
-        return result;
+        return await execute_with_cdp_retries('manual_browser_visit', cdp_logger, attempt_visit);
     } catch (error) {
+        const failure_message = error instanceof Error ? error.message : String(error);
+        const failure_stack = error instanceof Error ? error.stack : undefined;
+
+        cdp_logger.error('manual_browser_visit caught error.', {
+            message: failure_message,
+            stack: failure_stack
+        });
+
         return {
             statusCode: 502,
             header: {
-                [config.ERROR_HEADER_NAME]: `Request error: ${error instanceof Error ? error.message : String(error)}`
+                [config.ERROR_HEADER_NAME]: `Request error: ${failure_message}`
             },
             body: ''
         };
-    } finally {
-        try {
-            await close_tab(browser, tab, new_tab_info.target_id);
-        } catch (closeErr) {
-            cdp_logger.error('Failed to close tab after manual browser visit.', {
-                message: closeErr && closeErr.message ? closeErr.message : String(closeErr),
-                stack: closeErr && closeErr.stack ? closeErr.stack : undefined
-            });
-        } finally {
-            await close_browser_session(browser);
-        }
     }
 }
 
@@ -1356,12 +1837,18 @@ export async function new_tab(browser, initial_url = 'about:blank') {
     const { targetId: target_id } = await Target.createTarget({
         url: initial_url
     });
-    const tab = await CDP({
-        ... {
-            target: target_id
-        },
-        ...get_cdp_config(),
-    });
+    let tab = null;
+    try {
+        tab = await CDP({
+            ... {
+                target: target_id
+            },
+            ...get_cdp_config(),
+        });
+    } catch (err) {
+        await cleanup_failed_new_tab(Target, target_id, err);
+        throw err;
+    }
     register_open_tab(browser, tab, target_id);
     return {
         'tab': tab,
