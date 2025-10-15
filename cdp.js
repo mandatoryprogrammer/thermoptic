@@ -279,9 +279,62 @@ function is_transient_close_error(err) {
     return false;
 }
 
+function is_unexpected_http_response_error(err) {
+    if (!err) {
+        return false;
+    }
+
+    const error_code = typeof err === 'object' && err && typeof err.code === 'string' ? err.code.toLowerCase() : undefined;
+    if (error_code === 'unexpected_server_response') {
+        return true;
+    }
+
+    const message = normalize_error_message(err);
+    const lowered_message = message.toLowerCase();
+
+    if (lowered_message.includes('unexpected server response')) {
+        return true;
+    }
+
+    const has_unexpected_phrase = lowered_message.includes('unexpected response');
+    const mentions_handshake = lowered_message.includes('handshake');
+    const mentions_websocket = lowered_message.includes('websocket');
+
+    const status_candidates = [];
+
+    if (typeof err === 'object' && err && typeof err.statusCode === 'number') {
+        status_candidates.push(err.statusCode);
+    }
+
+    if (typeof err === 'object' && err && typeof err.status === 'number') {
+        status_candidates.push(err.status);
+    }
+
+    if (typeof err === 'object' && err && err.response && typeof err.response.statusCode === 'number') {
+        status_candidates.push(err.response.statusCode);
+    }
+
+    if (status_candidates.length > 0) {
+        const has_server_error = status_candidates.some((status) => status >= 500 && status < 600);
+        if (has_server_error && (has_unexpected_phrase || mentions_handshake || mentions_websocket)) {
+            return true;
+        }
+    }
+
+    if (has_unexpected_phrase && mentions_handshake) {
+        return true;
+    }
+
+    return false;
+}
+
 function should_retry_cdp_error(err) {
     if (!err) {
         return false;
+    }
+
+    if (is_unexpected_http_response_error(err)) {
+        return true;
     }
 
     const message = normalize_error_message(err);
@@ -687,6 +740,98 @@ async function close_browser_session(browser) {
         cdp_logger.error('Failed to close browser session.', {
             message: err && err.message ? err.message : String(err),
             stack: err && err.stack ? err.stack : undefined
+        });
+    }
+}
+
+async function cleanup_failed_new_tab(target_agent, target_id, creation_error) {
+    const creation_message = normalize_error_message(creation_error);
+    const creation_stack = creation_error instanceof Error ? creation_error.stack : undefined;
+
+    cdp_logger.warn('Cleaning up target after new tab creation failure.', {
+        target_id: target_id,
+        message: creation_message || undefined,
+        stack: creation_stack
+    });
+
+    let target_closed = false;
+
+    if (target_agent && typeof target_agent.closeTarget === 'function') {
+        try {
+            await target_agent.closeTarget({ targetId: target_id });
+            target_closed = true;
+        } catch (close_err) {
+            if (is_target_already_closed_error(close_err)) {
+                target_closed = true;
+            } else if (is_transient_close_error(close_err)) {
+                cdp_logger.info('Primary CDP session closed while cleaning failed new tab; retrying cleanup.', {
+                    target_id: target_id
+                });
+            } else {
+                cdp_logger.error('Failed to close target via existing session after new tab failure.', {
+                    target_id: target_id,
+                    message: close_err && close_err.message ? close_err.message : String(close_err),
+                    stack: close_err && close_err.stack ? close_err.stack : undefined
+                });
+            }
+        }
+    }
+
+    if (target_closed) {
+        return;
+    }
+
+    let fallback_result = {
+        success: false
+    };
+    try {
+        const candidate_result = await close_target_with_fresh_session(target_id);
+        if (candidate_result) {
+            fallback_result = candidate_result;
+        }
+    } catch (fallback_err) {
+        fallback_result = {
+            success: false,
+            error: fallback_err
+        };
+    }
+
+    if (fallback_result.success) {
+        return;
+    }
+
+    if (fallback_result.transient) {
+        cdp_logger.info('Fallback CDP session closed early while cleaning failed new tab; attempting HTTP endpoint.', {
+            target_id: target_id
+        });
+    } else if (fallback_result.error && !is_target_already_closed_error(fallback_result.error)) {
+        cdp_logger.error('Fallback closeTarget failed after new tab failure.', {
+            target_id: target_id,
+            message: fallback_result.error && fallback_result.error.message ? fallback_result.error.message : String(fallback_result.error),
+            stack: fallback_result.error && fallback_result.error.stack ? fallback_result.error.stack : undefined
+        });
+    }
+
+    let http_result = {
+        success: false
+    };
+    try {
+        const candidate_http_result = await close_target_via_http(target_id);
+        if (candidate_http_result) {
+            http_result = candidate_http_result;
+        }
+    } catch (http_err) {
+        http_result = {
+            success: false,
+            error: http_err
+        };
+    }
+
+    if (!http_result.success && http_result.error && !is_target_already_closed_error(http_result.error)) {
+        cdp_logger.error('HTTP closeTarget failed after new tab failure.', {
+            target_id: target_id,
+            message: http_result.error && http_result.error.message ? http_result.error.message : String(http_result.error),
+            stack: http_result.error && http_result.error.stack ? http_result.error.stack : undefined
         });
     }
 }
@@ -1692,12 +1837,18 @@ export async function new_tab(browser, initial_url = 'about:blank') {
     const { targetId: target_id } = await Target.createTarget({
         url: initial_url
     });
-    const tab = await CDP({
-        ... {
-            target: target_id
-        },
-        ...get_cdp_config(),
-    });
+    let tab = null;
+    try {
+        tab = await CDP({
+            ... {
+                target: target_id
+            },
+            ...get_cdp_config(),
+        });
+    } catch (err) {
+        await cleanup_failed_new_tab(Target, target_id, err);
+        throw err;
+    }
     register_open_tab(browser, tab, target_id);
     return {
         'tab': tab,
