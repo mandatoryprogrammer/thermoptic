@@ -15,7 +15,7 @@ export ENABLE_GUI_CONTROL
 export XPRA_BIND_HOST
 export XPRA_PORT
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/runtime-chromeuser}
-CHROME_PROFILE_DIR=${CHROME_PROFILE_DIR:-/tmp/chrome-profile}
+CHROME_PROFILE_DIR=${CHROME_PROFILE_DIR:-/home/chromeuser/profile}
 CHROME_SCREEN_WIDTH=${CHROME_SCREEN_WIDTH:-1920}
 CHROME_SCREEN_HEIGHT=${CHROME_SCREEN_HEIGHT:-1080}
 LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
@@ -61,7 +61,11 @@ export LIBGL_ALWAYS_SOFTWARE
 
 mkdir -p "${XDG_RUNTIME_DIR}"
 mkdir -p "${CHROME_PROFILE_DIR}"
-touch "${CHROME_PROFILE_DIR}/First Run"
+
+# Clear stale singleton locks from previous runs so Chrome can start cleanly
+rm -f "${CHROME_PROFILE_DIR}/SingletonLock" \
+      "${CHROME_PROFILE_DIR}/SingletonSocket" \
+      "${CHROME_PROFILE_DIR}/SingletonCookie"
 
 # Clean up Xvfb lock if needed
 if [ -e /tmp/.X99-lock ]; then

@@ -25,6 +25,7 @@ RUN groupadd -g 1001 chromeuser \
 # Set up app directory and permissions
 WORKDIR /app
 RUN chown -R 1001:1001 /app
+RUN mkdir -p /home/chromeuser/profile && chown -R 1001:1001 /home/chromeuser/profile
 
 # Fix perms
 RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix

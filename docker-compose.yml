@@ -4,6 +4,8 @@ services:
       context: ./chrome/
     platform: linux/amd64
     mem_limit: 2g
+    volumes:
+      - ./chrome-profile:/home/chromeuser/profile
     environment:
       PORT: 3003
       CHROME_CONTROL_PORT: 9223
