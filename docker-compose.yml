@@ -10,15 +10,27 @@ services:
       PORT: 3003
       CHROME_CONTROL_PORT: 9223
       CHROME_CONTROL_COOLDOWN_MS: 5000
+
+      # Enables xpra web panel on port 14111 so you can use
+      # the containerized Chrome browser by visiting
+      # http://127.0.0.1:14111
       ENABLE_GUI_CONTROL: "true"
-      XPRA_PORT: 14500
+
+      # Port that the xpra web UI listens on
+      XPRA_PORT: 14111
+
+      # The screen width in pixels for the dockerized
+      # headful Chrome display.
       CHROME_SCREEN_WIDTH: 1920
+
+      # The screen height in pixels for the dockerized
+      # headful Chrome display.
       CHROME_SCREEN_HEIGHT: 1080
     dns:
       - 8.8.8.8
       - 1.1.1.1
     ports:
-      - 127.0.0.1:14500:14500
+      - 127.0.0.1:14111:14111
   thermoptic:
     build: .
     volumes:
@@ -32,32 +44,56 @@ services:
       # The thermoptic HTTP proxy port that
       # is exposed for your HTTP clients to use.
       HTTP_PROXY_PORT: 1234
+
       # The port that CDP is listening on
       # for thermoptic to connect to
       CHROME_DEBUGGING_PORT: 3003
+
       # This is the hostname that thermoptic
       # will use to contact chrome
       CHROME_DEBUGGING_HOST: chrome
-      CHROME_CONTROL_PORT: 9223
-      THERMOPTIC_CONTAINER_RUNTIME: "true"
+
       # The username for thermoptic HTTP proxy
       PROXY_USERNAME: changeme
+
       # The password for thermoptic HTTP proxy
       PROXY_PASSWORD: changeme
+
       # If you're encountering a bug then set this to true
       # before you file an issue. It will help me debug your
       # problem as verbose statements are printed.
       DEBUG: false
+
       # Hook that runs on proxy start
       # ON_START_HOOK_FILE_PATH: /work/hooks/onstart.js
+
       # Hook that runs before each HTTP request
       # is proxied through thermoptic
       # BEFORE_REQUEST_HOOK_FILE_PATH: /work/hooks/beforerequest.js
+
       # Hook that runs after each HTTP request
       # is proxied through thermoptic.
       # AFTER_REQUEST_HOOK_FILE_PATH: /work/hooks/afterrequest.js
+
+      # Environment variable which is set to tell
+      # thermoptic that it's running inside a container.
+      # This should not be changed as it's used to
+      # selectively start things like regular health checks
+      # which only work when the full containerized 
+      # setup is being used.
+      THERMOPTIC_CONTAINER_RUNTIME: "true"
+
+      # This is the port that thermoptic exposes its health
+      # check web endpoint on. To ensure thermoptic has not
+      # gotten "jammed" due to Chrome freezing up this endponit
+      # is continually requested through the thermoptic proxy.
+      # When this endpoint can not be reached the Chrome browser
+      # is automatically restarted to address the freeze.
       HEALTHCHECK_ENDPOINT_PORT: 8085
+
+      # The HTTP path for the above healthcheck endpopint.
       HEALTHCHECK_ENDPOINT_PATH: /__thermoptic_health
-      ENABLE_GUI_CONTROL: "true"
-      CHROME_SCREEN_WIDTH: 1920
-      CHROME_SCREEN_HEIGHT: 1080
+
+      # Port of the Chrome "controller" service which is used
+      # to restart Chrome in the event of a freeze/jam.
+      CHROME_CONTROL_PORT: 9223

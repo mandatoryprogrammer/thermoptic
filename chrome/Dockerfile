@@ -39,7 +39,7 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD true
 ENV DISPLAY :99
 
 # Expose port
-EXPOSE 3003 14500
+EXPOSE 3003 14111
 
 # Run the app
 COPY --chown=1001:1001 restart_server.py /app/restart_server.py

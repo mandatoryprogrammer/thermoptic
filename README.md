@@ -55,6 +55,10 @@ Important notes:
 * If you don't want to use `---insecure` you need to use the generated CA file located in `./ssl/rootCA.crt`. This is generated the first time you run `thermoptic`.
 * You can connect `thermoptic` to any Chrome/Chromium instance launched with the `--remote-debugging-port` flag. This is essential as you'll want to set up and proxy through more commonly used environments to keep your fingerprint as low profile as possible (e.g. Chrome on Windows).
 
+## Features
+
+TODO: Fill me in.
+
 ## How does this cloaking work exactly?
 
 ![Visual diagram example](_readme/diagram.png)
@@ -149,9 +153,27 @@ These environment variables specify how `thermoptic` should be configured when i
 
 `CHROME_DEBUGGING_HOST`: The host that the Chrome Debugging Protocol is exposed on. This is often `127.0.0.1` if the browser is launched locally and `thermoptic` is not running in Docker. If it is running in Docker you may have to use `host.docker.internal`, see the [Docker docs](https://docs.docker.com/desktop/features/networking/#i-want-to-connect-from-a-container-to-a-service-on-the-host) for information.
 
+`PORT`: The CDP port the Chrome container publishes to the rest of the stack. Keep it aligned with `CHROME_DEBUGGING_PORT` so the `socat` bridge keeps working as expected.
+
+`CHROME_CONTROL_PORT`: Chrome's control-service port that thermoptic uses to manage the browser (for example, sending restart requests).
+
+`CHROME_CONTROL_COOLDOWN_MS`: Minimum time in milliseconds between Chrome restart attempts. Use this to avoid rapid restart loops when multiple failures occur in quick succession.
+
+`ENABLE_GUI_CONTROL`: Set to `true` to launch the xpra web panel so you can drive the containerized Chrome by visiting `http://127.0.0.1:14111`. Disable it for headless-only runs.
+
+`XPRA_PORT`: The TCP port xpra listens on when GUI control is enabled (defaults to `14111`). Change it if that port is already in use on your host.
+
+`CHROME_SCREEN_WIDTH` / `CHROME_SCREEN_HEIGHT`: The pixel dimensions of the dockerized headful Chrome display.
+
 `PROXY_USERNAME`: The username which is used to authenticate you to the proxy, default is `changeme`.
 
 `PROXY_PASSWORD`: The password which is used to authenticate you to the proxy, default is `changeme`.
+
+`THERMOPTIC_CONTAINER_RUNTIME`: Signals that thermoptic is running inside the bundled container. Leave this set to `true`; it gates behaviors like the built-in health checks that only make sense in the full Docker setup.
+
+`HEALTHCHECK_ENDPOINT_PORT`: The port where thermoptic exposes its health-check web endpoint. The health worker calls this through the proxy; if it stops responding, Chrome is automatically restarted to unstick frozen sessions.
+
+`HEALTHCHECK_ENDPOINT_PATH`: The HTTP path served by the health-check endpoint described above. Change it if you need a different URL.
 
 `ON_START_HOOK_FILE_PATH`: Custom Node code to run on proxy start. The proxy will not begin listening until this hook has completed, see the example in `./hooks/`. The sample demonstrates using the browser to click through Cloudflare's JavaScript browser check before starting the proxy.
 
@@ -159,7 +181,7 @@ These environment variables specify how `thermoptic` should be configured when i
 
 `AFTER_REQUEST_HOOK_FILE_PATH`: Custom Node code to run after a request has been proxied. Often this is useful to do things like clean up cookies that have been set by the client via `Cookie` header.
 
-`DEBUG`: Controls proxy logging verbosity. When unset or set to `false` only info/warn/error statements are printed. Any other non-empty value (for example `DEBUG=1`) enables detailed per-request debug tracing, including request UUIDs and CDP routing progress.
+`DEBUG`: Set this to `true` when you hit a bug so thermoptic prints verbose diagnostics before you file an issue; leave it `false` during normal operation.
 
 ## Handling browser JavaScript fingerprinting with `thermoptic` hooks
 
