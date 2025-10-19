@@ -57,7 +57,12 @@ Important notes:
 
 ## Features
 
-TODO: Fill me in.
+- 🕵️ [Browser-parity proxying](#how-does-this-cloaking-work-exactly) that replays requests through a real Chrome session to match JA4 fingerprints byte-for-byte.
+- 🤝 Little to no custom code required to integrate your HTTP client (e.g. `curl`, `requests`, etc) with `thermoptic`, just [set the proxy](#setup) and your fingerprints are taken care of.
+- 🪝 [Hook framework](#handling-browser-javascript-fingerprinting-with-thermoptic-hooks) for before-request/after-request/on-start automation so you can drive the full browser to solve challenges, or capture artifacts.
+  - 📘 An example Cloudflare turnstile solving hook can be seen in [`./hooks/onstart.js`](https://github.com/mandatoryprogrammer/thermoptic/blob/main/hooks/onstart.js).
+- 🖥️ [Web-browser control UI](#control-the-dockerized-chrome-browser-via-web-ui-xpra) (at `http://127.0.0.1:14111`) to control the Dockerized Chrome browser window. Useful to manually log into sites manually and then seemlessly use the proxy to make requests as your logged-in session (and for debugging).
+- 🛡️ Built-in health checks and restart control loop to detect frozen browsers and recover automatically without operator babysitting.
 
 ## How does this cloaking work exactly?
 
@@ -202,6 +207,17 @@ export async function hook(cdp) {
 ```
 
 For an example implementation, see the [`./hooks/onstart.js`](https://github.com/mandatoryprogrammer/thermoptic/blob/main/hooks/onstart.js) file which [bypasses the Cloudflare turnstile CAPTCHA](https://github.com/mandatoryprogrammer/thermoptic/blob/main/tutorials/turnstile/cloudflare-turnstile-bypass.md) (and other Cloudflare anti-bot checks).
+
+## Control the Dockerized Chrome Browser via Web UI (Xpra)
+
+`thermoptic` comes with Xpra web UI which is available at `http://127.0.0.1:14111`. This allows you to manually control the Dockerized Chrome browser with ease:
+
+<img src="_readme/browser-control.png" width="100%">
+
+This is useful for things such as:
+* Logging into your account so that you can make authenticated requests through `thermoptic` using your preferred HTTP client like `curl`.
+  * For example if you log into `reddit.com` with the browser, then all requests you make to Reddit through `thermoptic` will automatically be authenticated as your Reddit account!
+* Debugging your custom `thermoptic` hooks and checking for issues with websites.
 
 ## Security
 
