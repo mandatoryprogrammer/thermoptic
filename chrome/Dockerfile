@@ -10,8 +10,10 @@ RUN apt-get update \
 RUN apt-get update \
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list \
     && apt-get update \
-    && apt-get install -y socat google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 --no-install-recommends \
+    && apt-get install -y socat google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 xpra python3-paramiko libjs-jquery python3-pil --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+
+RUN ln -sf /usr/share/javascript/jquery/jquery.min.js /usr/share/xpra/www/js/lib/jquery.js
 
 # TODO: This is just debugging remove me later
 RUN apt-get update && apt-get install -y net-tools
@@ -23,6 +25,7 @@ RUN groupadd -g 1001 chromeuser \
 # Set up app directory and permissions
 WORKDIR /app
 RUN chown -R 1001:1001 /app
+RUN mkdir -p /home/chromeuser/profile && chown -R 1001:1001 /home/chromeuser/profile
 
 # Fix perms
 RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
@@ -36,7 +39,7 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD true
 ENV DISPLAY :99
 
 # Expose port
-EXPOSE 3003
+EXPOSE 3003 14111
 
 # Run the app
 COPY --chown=1001:1001 restart_server.py /app/restart_server.py
