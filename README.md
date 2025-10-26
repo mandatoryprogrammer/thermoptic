@@ -111,7 +111,9 @@ This tool will spoof the following JA4 fingerprints to be exactly like the Chrom
 
 ### What if I want to use another upstream HTTP/SOCKS proxy with this?
 
-`thermoptic` now routes the controlled Chrome instance through an internal `proxyrouter` service, so you can point Chrome at upstream HTTP or SOCKS proxies (including ones that require credentials). Set the upstream proxy URI by editing the `UPSTREAM_PROXY` value in `docker-compose.yml` under the `proxyrouter` service. When you leave it empty, Chrome talks directly to the internet through the unauthenticated in-cluster proxy. Example:
+`thermoptic` now routes the controlled Chrome instance through an internal `proxyrouter` service, so you can point Chrome at upstream HTTP or SOCKS proxies (including ones that require credentials). Set the upstream proxy URI by editing the `UPSTREAM_PROXY` value in `docker-compose.yml` under the `proxyrouter` service. When you leave it empty, Chrome talks directly to the internet through the unauthenticated in-cluster proxy. 
+
+Example for setting an upstream SOCKS proxy:
 
 ```yaml
   proxyrouter:
