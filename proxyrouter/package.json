@@ -1,0 +1,11 @@
+{
+    "name": "thermoptic-proxyrouter",
+    "version": "1.0.0",
+    "description": "Internal proxy router for Thermoptic Chrome container",
+    "type": "module",
+    "main": "index.js",
+    "license": "MIT",
+    "dependencies": {
+        "proxy-chain": "^2.2.1"
+    }
+}

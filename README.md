@@ -52,6 +52,7 @@ curl --proxy http://changeme:changeme@127.0.0.1:1234 --insecure https://ja4db.co
 
 Important notes:
 * Default proxy username and password are `changeme` please make sure you change them before exposing externally.
+* To chain Chrome through upstream HTTP or SOCKS proxies, edit the `UPSTREAM_PROXY` value in `docker-compose.yml`. The compose file pins this environment variable, so exporting it before `docker compose up` will not override the configured value. Leave it empty for direct outbound access.
 * If you don't want to use `---insecure` you need to use the generated CA file located in `./ssl/rootCA.crt`. This is generated the first time you run `thermoptic`.
 * You can connect `thermoptic` to any Chrome/Chromium instance launched with the `--remote-debugging-port` flag. This is essential as you'll want to set up and proxy through more commonly used environments to keep your fingerprint as low profile as possible (e.g. Chrome on Windows).
 
@@ -62,6 +63,7 @@ Important notes:
 - 🪝 [Hook framework](#handling-browser-javascript-fingerprinting-with-thermoptic-hooks) for before-request/after-request/on-start automation so you can drive the full browser to solve challenges, or capture artifacts.
   - 📘 An example Cloudflare turnstile solving hook can be seen in [`./hooks/onstart.js`](https://github.com/mandatoryprogrammer/thermoptic/blob/main/hooks/onstart.js).
 - 🖥️ [Web-browser control UI](#control-the-dockerized-chrome-browser-via-web-ui-xpra) (at `http://127.0.0.1:14111`) to control the Dockerized Chrome browser window. Useful to manually log into sites manually and then seemlessly use the proxy to make requests as your logged-in session (and for debugging).
+- 🔌 Set an upstream HTTP or SOCKS proxy URI via the `UPSTREAM_PROXY` environment variable in `docker-compose.yml`.
 - 🛡️ Built-in health checks and restart control loop to detect frozen browsers and recover automatically without operator babysitting.
 
 ## How does this cloaking work exactly?
@@ -108,9 +110,19 @@ This tool will spoof the following JA4 fingerprints to be exactly like the Chrom
 * JA4X (X509 TLS certificate fingerprint)
 * JA4T (TCP fingerprint)
 
-### What if I want to use another HTTP proxy with this?
+### What if I want to use another upstream HTTP/SOCKS proxy with this?
 
-You can configure an HTTP proxy to be used by the web browser that `thermoptic` controls. Please note that depending on the context, this could cause fingerprinting differences (e.g. at the TCP stack level).
+`thermoptic` now routes the controlled Chrome instance through an internal `proxyrouter` service, so you can point Chrome at upstream HTTP or SOCKS proxies (including ones that require credentials). Set the upstream proxy URI by editing the `UPSTREAM_PROXY` value in `docker-compose.yml` under the `proxyrouter` service. When you leave it empty, Chrome talks directly to the internet through the unauthenticated in-cluster proxy. 
+
+Example for setting an upstream SOCKS proxy:
+
+```yaml
+  proxyrouter:
+    environment:
+      UPSTREAM_PROXY: "socks5://username:password@1.2.3.4:1080"
+```
+
+Be aware that some upstream proxies can change low-level fingerprints (for example, TCP metadata) which may reduce parity with a residential browser.
 
 ### What about cookies?
 

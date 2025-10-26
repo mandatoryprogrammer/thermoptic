@@ -1,9 +1,27 @@
 services:
+  proxyrouter:
+    build:
+      context: ./proxyrouter/
+    environment:
+      PROXY_ROUTER_PORT: 3128
+      # Upstream proxy, leave empty "" for no proxy
+      # Otherwise give a full proxy URI like:
+      # http://user:pass@proxy.example:8080
+      UPSTREAM_PROXY: ""
+    expose:
+      - 3128
+  # Important: This Chrome instance is not meant to be perfectly stealthy
+  # You should consider using a "real" Chrome browser and connect it to
+  # thermoptic for better stealth/anti-bot status.
+  # For example, this Dockerized Chrome doesn't make use of GPU-rendering
+  # which is a giveaway to most anti-bot frameworks that you may be a bot.
   chrome:
     build:
       context: ./chrome/
     platform: linux/amd64
     mem_limit: 2g
+    depends_on:
+      - proxyrouter
     volumes:
       - ./chrome-profile:/home/chromeuser/profile
     environment:
@@ -26,6 +44,15 @@ services:
       # The screen height in pixels for the dockerized
       # headful Chrome display.
       CHROME_SCREEN_HEIGHT: 1080
+
+      # Proxy router endpoint that Chrome should use for outbound HTTP(S) traffic.
+      CHROME_PROXY_SERVER: http://proxyrouter:3128
+      # Bypass list that Chrome should use alongside the proxy router.
+      CHROME_PROXY_BYPASS_LIST: "<-loopback>;thermoptic"
+      # When true Chrome resolves DNS queries through the proxy.
+      CHROME_PROXY_ENABLE_DNS: "true"
+      # Comma-separated hosts Chrome should always resolve locally when DNS proxying is enabled.
+      CHROME_PROXY_DNS_EXCLUSIONS: "localhost,thermoptic"
     dns:
       - 8.8.8.8
       - 1.1.1.1
