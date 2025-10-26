@@ -18,9 +18,6 @@ RUN apt-get update \
 
 RUN ln -sf /usr/share/javascript/jquery/jquery.min.js /usr/share/xpra/www/js/lib/jquery.js
 
-# TODO: This is just debugging remove me later
-RUN apt-get update && apt-get install -y net-tools
-
 # Create non-root user with fixed UID/GID
 RUN groupadd -g 1001 chromeuser \
     && useradd -u 1001 -g 1001 -m -s /bin/bash chromeuser
