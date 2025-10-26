@@ -52,7 +52,6 @@ curl --proxy http://changeme:changeme@127.0.0.1:1234 --insecure https://ja4db.co
 
 Important notes:
 * Default proxy username and password are `changeme` please make sure you change them before exposing externally.
-* To chain Chrome through upstream HTTP or SOCKS proxies, edit the `UPSTREAM_PROXY` value in `docker-compose.yml`. The compose file pins this environment variable, so exporting it before `docker compose up` will not override the configured value. Leave it empty for direct outbound access.
 * If you don't want to use `---insecure` you need to use the generated CA file located in `./ssl/rootCA.crt`. This is generated the first time you run `thermoptic`.
 * You can connect `thermoptic` to any Chrome/Chromium instance launched with the `--remote-debugging-port` flag. This is essential as you'll want to set up and proxy through more commonly used environments to keep your fingerprint as low profile as possible (e.g. Chrome on Windows).
 
