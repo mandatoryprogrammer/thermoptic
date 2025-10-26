@@ -1,5 +1,8 @@
 FROM ubuntu:22.04
 
+# Fix issue with builds on some platforms
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Install system dependencies
 RUN apt-get update \
     && apt-get install -yq wget curl gnupg libgconf-2-4 ca-certificates xvfb dbus dbus-x11 build-essential python3 --no-install-recommends \
