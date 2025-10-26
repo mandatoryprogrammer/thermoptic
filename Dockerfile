@@ -9,6 +9,7 @@ COPY package-lock.json /work/
 RUN npm install
 RUN npm install --prefix /work/anyproxy commander
 COPY ./anyproxy /work/anyproxy/
+RUN sed -i 's/\r$//' /work/anyproxy/bin/anyproxy-ca
 RUN /work/anyproxy/bin/anyproxy-ca --generate
 RUN cp /root/.anyproxy/certificates/rootCA.crt /work/ssl/
 RUN cp /root/.anyproxy/certificates/rootCA.key /work/ssl/
@@ -27,5 +28,6 @@ COPY logger.js /work/
 
 COPY docker-entrypoint.sh /work/
 RUN chmod +x /work/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /work/docker-entrypoint.sh
 
 ENTRYPOINT ["/work/docker-entrypoint.sh"]
