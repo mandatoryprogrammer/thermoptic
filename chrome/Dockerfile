@@ -44,6 +44,7 @@ EXPOSE 3003 14111
 # Run the app
 COPY --chown=1001:1001 restart_server.py /app/restart_server.py
 COPY --chown=1001:1001 start.sh /app/start.sh
+RUN sed -i 's/\r$//' /app/start.sh
 RUN chmod +x /app/start.sh /app/restart_server.py
 
 CMD ["/app/start.sh"]
