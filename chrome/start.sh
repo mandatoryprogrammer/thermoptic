@@ -7,6 +7,10 @@ CHROME_CONTROL_COOLDOWN_MS=${CHROME_CONTROL_COOLDOWN_MS:-5000}
 ENABLE_GUI_CONTROL=${ENABLE_GUI_CONTROL:-false}
 XPRA_BIND_HOST=${XPRA_BIND_HOST:-0.0.0.0}
 XPRA_PORT=${XPRA_PORT:-14111}
+CHROME_PROXY_SERVER=${CHROME_PROXY_SERVER:-http://proxyrouter:3128}
+CHROME_PROXY_BYPASS_LIST=${CHROME_PROXY_BYPASS_LIST:-"<-loopback>;thermoptic"}
+CHROME_PROXY_ENABLE_DNS=${CHROME_PROXY_ENABLE_DNS:-true}
+CHROME_PROXY_DNS_EXCLUSIONS=${CHROME_PROXY_DNS_EXCLUSIONS:-"localhost,thermoptic"}
 
 export CHROME_CONTROL_PORT
 export CHROME_CONTROL_PID_FILE
@@ -14,6 +18,10 @@ export CHROME_CONTROL_COOLDOWN_MS
 export ENABLE_GUI_CONTROL
 export XPRA_BIND_HOST
 export XPRA_PORT
+export CHROME_PROXY_SERVER
+export CHROME_PROXY_BYPASS_LIST
+export CHROME_PROXY_ENABLE_DNS
+export CHROME_PROXY_DNS_EXCLUSIONS
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/runtime-chromeuser}
 CHROME_PROFILE_DIR=${CHROME_PROFILE_DIR:-/home/chromeuser/profile}
 CHROME_SCREEN_WIDTH=${CHROME_SCREEN_WIDTH:-1920}
@@ -52,7 +60,63 @@ CHROME_COMMON_FLAGS=(
   --use-gl=swiftshader
   --disable-breakpad
   --disable-crash-reporter
+  "--proxy-server=${CHROME_PROXY_SERVER}"
+  "--proxy-bypass-list=${CHROME_PROXY_BYPASS_LIST}"
 )
+
+# Ensure Chrome can still resolve the proxy server when DNS proxying is enabled.
+proxy_host=""
+if [ -n "${CHROME_PROXY_SERVER}" ]; then
+    proxy_host="$(python3 - "$CHROME_PROXY_SERVER" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+uri = sys.argv[1].strip()
+if not uri:
+    print("")
+    sys.exit(0)
+if "://" not in uri:
+    uri = f"http://{uri}"
+parts = urlsplit(uri)
+print(parts.hostname or "")
+PY
+)"
+    proxy_host="$(printf '%s' "${proxy_host}" | xargs)"
+fi
+
+if [ -n "${proxy_host}" ]; then
+    append_proxy_host=true
+    if [ -n "${CHROME_PROXY_DNS_EXCLUSIONS}" ]; then
+        IFS=',' read -ra current_exclusions <<< "${CHROME_PROXY_DNS_EXCLUSIONS}"
+        for existing in "${current_exclusions[@]}"; do
+            trimmed_existing="$(printf '%s' "${existing}" | xargs)"
+            if [ "${trimmed_existing}" = "${proxy_host}" ]; then
+                append_proxy_host=false
+                break
+            fi
+        done
+    fi
+
+    if [ "${append_proxy_host}" = "true" ]; then
+        if [ -z "${CHROME_PROXY_DNS_EXCLUSIONS}" ]; then
+            CHROME_PROXY_DNS_EXCLUSIONS="${proxy_host}"
+        else
+            CHROME_PROXY_DNS_EXCLUSIONS="${CHROME_PROXY_DNS_EXCLUSIONS},${proxy_host}"
+        fi
+    fi
+fi
+
+if [ "${CHROME_PROXY_ENABLE_DNS}" = "true" ]; then
+    resolver_rule="MAP * ~NOTFOUND"
+    IFS=',' read -ra dns_exclusions <<< "${CHROME_PROXY_DNS_EXCLUSIONS}"
+    for exclusion in "${dns_exclusions[@]}"; do
+        trimmed="$(printf '%s' "${exclusion}" | xargs)"
+        if [ -n "${trimmed}" ]; then
+            resolver_rule="${resolver_rule} , EXCLUDE ${trimmed}"
+        fi
+    done
+    CHROME_COMMON_FLAGS+=("--host-resolver-rules=${resolver_rule}")
+fi
 export XDG_RUNTIME_DIR
 export CHROME_PROFILE_DIR
 export CHROME_SCREEN_WIDTH
