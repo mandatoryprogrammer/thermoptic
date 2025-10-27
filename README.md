@@ -133,10 +133,6 @@ Be aware that some upstream proxies can change low-level fingerprints (for examp
 
 Yep, `thermoptic` supports hybrid usage like this, [see this section for more information.](#handling-browser-javascript-fingerprinting-with-thermoptic-hooks)
 
-### What about proxies?
-
-You [can set a proxy for Chrome to use](https://www.chromium.org/developers/design-documents/network-settings/) and then set `thermoptic` to use that Chrome instance. Future releases of `thermoptic` will streamline this process.
-
 ### My fingerprint for request X doesn't match the browser fingerprint!
 
 You need to make sure that you're setting headers like `X-Fetch-*`, `Origin`, and `Referer` correctly. If you don't tell `thermoptic` about these headers then it won't be able to execute the request in the appropriately stealthy way.
