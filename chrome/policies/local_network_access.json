@@ -1,0 +1,6 @@
+{
+    "LocalNetworkAccessRestrictionsTemporaryOptOut": true,
+    "LocalNetworkAccessAllowedForUrls": [
+        "*"
+    ]
+}
