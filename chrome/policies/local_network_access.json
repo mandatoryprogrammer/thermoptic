@@ -1,5 +1,5 @@
 {
-    "LocalNetworkAccessRestrictionsEnabled": true,
+    "LocalNetworkAccessRestrictionsTemporaryOptOut": true,
     "LocalNetworkAccessAllowedForUrls": [
         "*"
     ]
