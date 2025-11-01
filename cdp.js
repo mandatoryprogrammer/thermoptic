@@ -1672,15 +1672,15 @@ async function _manual_browser_visit(tab, url) {
                         return;
                     }
 
-                    let body = '';
+                    let raw_body = Buffer.alloc(0);
                     if (!REDIRECT_STATUS_CODES.includes(responseStatusCode)) {
                         const response_tmp = await Fetch.getResponseBody({ requestId });
-                        body = response_tmp.body;
                         if (response_tmp.base64Encoded) {
-                            body = atob(body);
+                            raw_body = Buffer.from(response_tmp.body, 'base64');
+                        } else {
+                            raw_body = Buffer.from(response_tmp.body, 'utf8');
                         }
                     }
-                    const raw_body = Buffer.from(body);
 
                     // Send a NOP response so the request is side-effect free.
                     await Fetch.fulfillRequest({
@@ -1692,9 +1692,23 @@ async function _manual_browser_visit(tab, url) {
 
                     // Return formatted proxy response
                     await clean_up();
+                    const normalized_headers = utils.fetch_headers_to_proxy_response_headers(responseHeaders);
+                    if (typeof normalized_headers['content-length'] !== 'undefined') {
+                        normalized_headers['content-length'] = String(raw_body.length);
+                    }
+                    if (typeof normalized_headers['Content-Length'] !== 'undefined') {
+                        normalized_headers['Content-Length'] = String(raw_body.length);
+                    }
+                    delete normalized_headers['content-encoding'];
+                    delete normalized_headers['Content-Encoding'];
+
+                    cdp_logger.debug('Captured response headers.', {
+                        headers: normalized_headers,
+                        body_length: raw_body.length
+                    });
                     resolve({
                         statusCode: responseStatusCode,
-                        header: utils.fetch_headers_to_proxy_response_headers(responseHeaders),
+                        header: normalized_headers,
                         body: raw_body
                     });
                 });
