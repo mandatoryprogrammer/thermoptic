@@ -7,12 +7,7 @@ RUN mkdir /work/ssl/
 COPY package.json /work/
 COPY package-lock.json /work/
 RUN npm install
-RUN npm install --prefix /work/anyproxy commander
-COPY ./anyproxy /work/anyproxy/
-RUN sed -i 's/\r$//' /work/anyproxy/bin/anyproxy-ca
-RUN /work/anyproxy/bin/anyproxy-ca --generate
-RUN cp /root/.anyproxy/certificates/rootCA.crt /work/ssl/
-RUN cp /root/.anyproxy/certificates/rootCA.key /work/ssl/
+COPY ssl /work/ssl/
 
 COPY cdp.js /work/
 COPY config.js /work/

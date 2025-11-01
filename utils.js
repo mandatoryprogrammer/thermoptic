@@ -54,6 +54,13 @@ export function convert_headers_array(flat_headers) {
 export function fetch_headers_to_proxy_response_headers(fetch_headers) {
     let formatted_headers = {};
     fetch_headers.map(header_pair => {
+        if (!header_pair || typeof header_pair.name !== 'string') {
+            return;
+        }
+        const normalized_name = header_pair.name.toLowerCase();
+        if (normalized_name.startsWith(':')) {
+            return;
+        }
         formatted_headers[header_pair.name] = header_pair.value;
     });
     return formatted_headers;

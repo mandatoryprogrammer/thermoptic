@@ -168,23 +168,24 @@ const AUTHENTICATION_REQUIRED_PROXY_RESPONSE = {
 };
 
 function get_authentication_status(request) {
-    const proxy_authentication = fetchgen.get_header_value_ignore_case(
-        'Proxy-Authorization',
-        fetchgen.convert_headers_map_to_array(request.requestOptions.headers),
-    );
+    const connection_state = request.connection_state;
+    if (connection_state && connection_state.is_authenticated) {
+        connection_state.last_seen = Date.now();
+        return true;
+    }
+
+    const proxy_authentication = request.proxy_authorization_header;
 
     if (!proxy_authentication || !(proxy_authentication.includes('Basic'))) {
         return false;
     }
 
-    const proxy_auth_string = (
-        new Buffer(
-            proxy_authentication.replace(
-                'Basic ',
-                ''
-            ).trim(),
-            'base64'
-        )
+    const proxy_auth_string = Buffer.from(
+        proxy_authentication.replace(
+            'Basic ',
+            ''
+        ).trim(),
+        'base64'
     ).toString();
 
     const proxy_auth_string_parts = proxy_auth_string.split(':');
@@ -194,5 +195,10 @@ function get_authentication_status(request) {
     const creds_sent = `${username}:${password}`;
     const creds_set = `${process.env.PROXY_USERNAME}:${process.env.PROXY_PASSWORD}`;
 
-    return utils.time_safe_compare(creds_set, creds_sent);
+    const is_authenticated = utils.time_safe_compare(creds_set, creds_sent);
+    if (is_authenticated && connection_state) {
+        connection_state.is_authenticated = true;
+        connection_state.last_seen = Date.now();
+    }
+    return is_authenticated;
 }
