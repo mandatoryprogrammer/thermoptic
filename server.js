@@ -7,6 +7,8 @@ import * as fetchgen from './fetchgen.js';
 import * as logger from './logger.js';
 import { start_health_monitor } from './healthcheck.js';
 
+const PROXY_AUTHENTICATION_ENABLED = Boolean(process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD);
+
 // Top-level error handling for unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
     const app_logger = logger.get_logger();
@@ -34,9 +36,17 @@ process.on('uncaughtException', (err) => {
         http_proxy_port = parseInt(process.env.HTTP_PROXY_PORT);
     }
 
-    if (!process.env.PROXY_USERNAME || !process.env.PROXY_PASSWORD) {
-        app_logger.error('PROXY_USERNAME and PROXY_PASSWORD must be set via environment variables. Quitting...');
-        process.exit(-1);
+    if (!PROXY_AUTHENTICATION_ENABLED) {
+        const warning_banner_lines = [
+            '**********************************************************************',
+            '* [WARN] THERMOPTIC PROXY RUNNING WITHOUT AUTHENTICATION            *',
+            '* PROXY_USERNAME/PROXY_PASSWORD not set. Any local clients can use  *',
+            '* this proxy. Ensure it is not exposed publicly or abuse may occur. *',
+            '**********************************************************************'
+        ];
+        warning_banner_lines.forEach((line) => {
+            app_logger.warn(line);
+        });
     }
 
     app_logger.info('thermoptic has begun the initializing process.');
@@ -168,6 +178,10 @@ const AUTHENTICATION_REQUIRED_PROXY_RESPONSE = {
 };
 
 function get_authentication_status(request) {
+    if (!PROXY_AUTHENTICATION_ENABLED) {
+        return true;
+    }
+
     const connection_state = request.connection_state;
     if (connection_state && connection_state.is_authenticated) {
         connection_state.last_seen = Date.now();
