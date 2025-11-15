@@ -10,11 +10,52 @@ const CA_DIRECTORY_PATH = resolve('./ssl');
 const CA_CERTIFICATE_PATH = resolve('./ssl/rootCA.crt');
 const CA_PRIVATE_KEY_PATH = resolve('./ssl/rootCA.key');
 const CONNECTION_STATE_TTL_MS = 15 * 60 * 1000;
+const FILTERED_RESPONSE_HEADER_NAMES = new Set(['content-encoding']);
 
 const connection_states = new Map();
 let mockttp_module = null;
 
 seed_global_crypto();
+
+function sanitize_proxy_response_headers(headers) {
+    if (!headers || typeof headers !== 'object') {
+        return {};
+    }
+
+    const sanitized_headers = {};
+
+    const append_header = (header_name, header_value) => {
+        if (!header_name || typeof header_name !== 'string') {
+            return;
+        }
+        const normalized_name = header_name.toLowerCase();
+        if (FILTERED_RESPONSE_HEADER_NAMES.has(normalized_name)) {
+            return;
+        }
+        sanitized_headers[header_name] = header_value;
+    };
+
+    if (headers instanceof Map) {
+        headers.forEach((value, name) => append_header(name, value));
+        return sanitized_headers;
+    }
+
+    if (Array.isArray(headers)) {
+        headers.forEach((entry) => {
+            if (entry && typeof entry.name === 'string') {
+                append_header(entry.name, entry.value);
+                return;
+            }
+            if (Array.isArray(entry) && entry.length >= 2 && typeof entry[0] === 'string') {
+                append_header(entry[0], entry[1]);
+            }
+        });
+        return sanitized_headers;
+    }
+
+    Object.entries(headers).forEach(([name, value]) => append_header(name, value));
+    return sanitized_headers;
+}
 
 export async function get_http_proxy(port, ready_func, error_func, on_request_func) {
     const proxy_logger = logger.get_logger();
@@ -57,10 +98,11 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
                 }
 
                 const response = handler_result.response;
+                const sanitized_headers = sanitize_proxy_response_headers(response.header ?? {});
                 return {
                     statusCode: response.statusCode ?? 500,
                     statusMessage: response.statusMessage,
-                    headers: response.header ?? {},
+                    headers: sanitized_headers,
                     body: response.body
                 };
             } catch (handler_error) {
