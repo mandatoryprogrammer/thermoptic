@@ -11,6 +11,7 @@ const CA_CERTIFICATE_PATH = resolve('./ssl/rootCA.crt');
 const CA_PRIVATE_KEY_PATH = resolve('./ssl/rootCA.key');
 const CONNECTION_STATE_TTL_MS = 15 * 60 * 1000;
 const FILTERED_RESPONSE_HEADER_NAMES = new Set(['content-encoding']);
+const PROXY_AUTHENTICATION_ENABLED = Boolean(process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD);
 
 const connection_states = new Map();
 let mockttp_module = null;
@@ -495,6 +496,10 @@ function handle_proxy_authorization_header(socket, proxy_auth_header) {
 }
 
 function validate_proxy_authorization(header_value) {
+    if (!PROXY_AUTHENTICATION_ENABLED) {
+        return true;
+    }
+
     if (!header_value || !header_value.includes('Basic')) {
         return false;
     }

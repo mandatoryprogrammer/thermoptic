@@ -81,10 +81,12 @@ services:
       CHROME_DEBUGGING_HOST: chrome
 
       # The username for thermoptic HTTP proxy
-      PROXY_USERNAME: changeme
+      # If unset then the proxy requires no authentication.
+      # PROXY_USERNAME: changeme
 
       # The password for thermoptic HTTP proxy
-      PROXY_PASSWORD: changeme
+      # If unset then the proxy requires no authentication.
+      # PROXY_PASSWORD: changeme
 
       # If you're encountering a bug then set this to true
       # before you file an issue. It will help me debug your

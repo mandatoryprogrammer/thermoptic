@@ -30,7 +30,7 @@ ge11cn19enus_f2808f0d04cf_9a10d4221160_7068f58def6e
 However, when we use the proxy to make the request, our JA4H fingerprint is magically identical:
 
 ```
-$ curl --proxy http://username:password@thermoptic:1234 https://ja4db.com/id/ja4h/
+$ curl --proxy http://thermoptic:1234 https://ja4db.com/id/ja4h/
 ge11cn19enus_f2808f0d04cf_9a10d4221160_7068f58def6e
 ```
 
@@ -47,11 +47,11 @@ docker compose up --build
 That's all, now you can proxy traffic through it:
 
 ```
-curl --proxy http://changeme:changeme@127.0.0.1:1234 --insecure https://ja4db.com/id/ja4h/
+curl --proxy http://127.0.0.1:1234 --insecure https://ja4db.com/id/ja4h/
 ```
 
 Important notes:
-* Default proxy username and password are `changeme` please make sure you change them before exposing externally.
+* By default the proxy runs without authentication. If you plan on exposing the proxy externally please make sure to set authentication with the environment variables `PROXY_USERNAME` and `PROXY_PASSWORD`.
 * If you don't want to use `---insecure` you need to use the generated CA file located in `./ssl/rootCA.crt`. This is generated the first time you run `thermoptic`.
 * You can connect `thermoptic` to any Chrome/Chromium instance launched with the `--remote-debugging-port` flag. This is essential as you'll want to set up and proxy through more commonly used environments to keep your fingerprint as low profile as possible (e.g. Chrome on Windows).
 
@@ -207,9 +207,9 @@ These environment variables specify how `thermoptic` should be configured when i
 
 `CHROME_SCREEN_WIDTH` / `CHROME_SCREEN_HEIGHT`: The pixel dimensions of the dockerized headful Chrome display.
 
-`PROXY_USERNAME`: The username which is used to authenticate you to the proxy, default is `changeme`.
+`PROXY_USERNAME`: The username which is used to authenticate you to the proxy, default is `changeme`. If unset then the proxy runs without requiring authentication.
 
-`PROXY_PASSWORD`: The password which is used to authenticate you to the proxy, default is `changeme`.
+`PROXY_PASSWORD`: The password which is used to authenticate you to the proxy, default is `changeme`. If unset then the proxy runs without requiring authentication.
 
 `THERMOPTIC_CONTAINER_RUNTIME`: Signals that thermoptic is running inside the bundled container. Leave this set to `true`; it gates behaviors like the built-in health checks that only make sense in the full Docker setup.
 
