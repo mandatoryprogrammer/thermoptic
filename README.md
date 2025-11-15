@@ -64,6 +64,7 @@ Important notes:
 - 🖥️ [Web-browser control UI](#control-the-dockerized-chrome-browser-via-web-ui-xpra) (at `http://127.0.0.1:14111`) to control the Dockerized Chrome browser window. Useful to manually log into sites manually and then seemlessly use the proxy to make requests as your logged-in session (and for debugging).
 - 🔌 Set an upstream HTTP or SOCKS proxy URI via the `UPSTREAM_PROXY` environment variable in `docker-compose.yml`.
 - 🛡️ Built-in health checks and restart control loop to detect frozen browsers and recover automatically without operator babysitting.
+- ⚡ Supports HTTP/1.1 and HTTP/2, allowing traffic to be proxied over either protocol. (_Note that you may talk HTTP/1.1 to the proxy, and the puppeted Chrome may negotiate with the end site over a different protocol._)
 
 ## How does this cloaking work exactly?
 
