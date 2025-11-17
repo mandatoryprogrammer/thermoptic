@@ -11,6 +11,13 @@ const CA_CERTIFICATE_PATH = resolve('./ssl/rootCA.crt');
 const CA_PRIVATE_KEY_PATH = resolve('./ssl/rootCA.key');
 const CONNECTION_STATE_TTL_MS = 15 * 60 * 1000;
 const FILTERED_RESPONSE_HEADER_NAMES = new Set(['content-encoding']);
+const HTTP2_INCOMPATIBLE_RESPONSE_HEADER_NAMES = new Set([
+    'connection',
+    'proxy-connection',
+    'keep-alive',
+    'transfer-encoding',
+    'upgrade'
+]);
 const PROXY_AUTHENTICATION_ENABLED = Boolean(process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD);
 
 const connection_states = new Map();
@@ -18,19 +25,23 @@ let mockttp_module = null;
 
 seed_global_crypto();
 
-function sanitize_proxy_response_headers(headers) {
+function sanitize_proxy_response_headers(headers, options = {}) {
     if (!headers || typeof headers !== 'object') {
         return {};
     }
 
     const sanitized_headers = {};
+    const strip_http2_incompatible_headers = Boolean(options.strip_http2_incompatible_headers);
 
     const append_header = (header_name, header_value) => {
         if (!header_name || typeof header_name !== 'string') {
             return;
         }
         const normalized_name = header_name.toLowerCase();
-        if (FILTERED_RESPONSE_HEADER_NAMES.has(normalized_name)) {
+        if (normalized_name.startsWith(':')) {
+            return;
+        }
+        if (should_filter_response_header(normalized_name, strip_http2_incompatible_headers)) {
             return;
         }
         sanitized_headers[header_name] = header_value;
@@ -58,6 +69,16 @@ function sanitize_proxy_response_headers(headers) {
     return sanitized_headers;
 }
 
+function should_filter_response_header(header_name, strip_http2_incompatible_headers) {
+    if (FILTERED_RESPONSE_HEADER_NAMES.has(header_name)) {
+        return true;
+    }
+    if (strip_http2_incompatible_headers && HTTP2_INCOMPATIBLE_RESPONSE_HEADER_NAMES.has(header_name)) {
+        return true;
+    }
+    return false;
+}
+
 export async function get_http_proxy(port, ready_func, error_func, on_request_func) {
     const proxy_logger = logger.get_logger();
 
@@ -81,6 +102,7 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
         .waitForRequestBody()
         .thenCallback(async(mockttp_request) => {
             purge_expired_connection_states();
+            const is_http2_downstream = is_http2_request(mockttp_request);
             const adapted_request = await adapt_request_for_handler(mockttp_request);
             try {
                 const handler_result = await on_request_func(adapted_request);
@@ -99,7 +121,9 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
                 }
 
                 const response = handler_result.response;
-                const sanitized_headers = sanitize_proxy_response_headers(response.header ?? {});
+                const sanitized_headers = sanitize_proxy_response_headers(response.header ?? {}, {
+                    strip_http2_incompatible_headers: is_http2_downstream
+                });
                 return {
                     statusCode: response.statusCode ?? 500,
                     statusMessage: response.statusMessage,
@@ -397,6 +421,26 @@ function normalize_protocol(protocol) {
         return '';
     }
     return protocol.endsWith(':') ? protocol.slice(0, -1) : protocol;
+}
+
+function is_http2_request(request) {
+    if (!request || typeof request !== 'object') {
+        return false;
+    }
+
+    if (typeof request.httpVersion === 'string' && request.httpVersion.startsWith('2')) {
+        return true;
+    }
+
+    if (request.headers && typeof request.headers === 'object') {
+        for (const header_name of Object.keys(request.headers)) {
+            if (typeof header_name === 'string' && header_name.startsWith(':')) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 function get_connection_key(request) {
