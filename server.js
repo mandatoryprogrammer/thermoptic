@@ -8,6 +8,7 @@ import * as logger from './logger.js';
 import { start_health_monitor } from './healthcheck.js';
 
 const PROXY_AUTHENTICATION_ENABLED = Boolean(process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD);
+const DEBUG_TRACE_HEADER_NAME = 'X-Debug-Id';
 
 // Top-level error handling for unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
@@ -77,7 +78,11 @@ process.on('uncaughtException', (err) => {
 
             if (!is_authenticated) {
                 request_logger.warn('Authentication failed for inbound proxy request.');
-                return AUTHENTICATION_REQUIRED_PROXY_RESPONSE;
+                const auth_response = create_authentication_required_response();
+                attach_debug_id_header(auth_response, request_id);
+                return {
+                    response: auth_response
+                };
             }
 
             request_logger.debug('Authentication successful for inbound proxy request.');
@@ -117,6 +122,7 @@ process.on('uncaughtException', (err) => {
                     await utils.run_hook_file(process.env.AFTER_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, response, request_logger);
                 }
 
+                attach_debug_id_header(response, request_id);
                 request_logger.info('Successfully generated response for proxy request.', {
                     status_code: response.statusCode,
                     headers_count: response.header ? Object.keys(response.header).length : 0
@@ -127,6 +133,7 @@ process.on('uncaughtException', (err) => {
                     response: response
                 };
             } catch (err) {
+                attach_debug_id_to_error_response(err, request_id);
                 request_error = {
                     message: err instanceof Error ? err.message : String(err),
                     stack: err instanceof Error ? err.stack : undefined
@@ -167,16 +174,6 @@ process.on('uncaughtException', (err) => {
     }
 })();
 
-const AUTHENTICATION_REQUIRED_PROXY_RESPONSE = {
-    response: {
-        statusCode: 407,
-        header: {
-            'Proxy-Authenticate': 'Basic realm="Please provide valid credentials."'
-        },
-        body: 'Provide credentials.'
-    }
-};
-
 function get_authentication_status(request) {
     if (!PROXY_AUTHENTICATION_ENABLED) {
         return true;
@@ -215,4 +212,69 @@ function get_authentication_status(request) {
         connection_state.last_seen = Date.now();
     }
     return is_authenticated;
+}
+
+function create_authentication_required_response() {
+    return {
+        statusCode: 407,
+        header: {
+            'Proxy-Authenticate': 'Basic realm="Please provide valid credentials."'
+        },
+        body: 'Provide credentials.'
+    };
+}
+
+function attach_debug_id_header(response, request_id) {
+    if (!response || !request_id) {
+        return;
+    }
+
+    if (!logger.is_debug_enabled()) {
+        return;
+    }
+
+    if (response.header instanceof Map) {
+        response.header.set(DEBUG_TRACE_HEADER_NAME, request_id);
+        return;
+    }
+
+    if (Array.isArray(response.header)) {
+        response.header.push({
+            name: DEBUG_TRACE_HEADER_NAME,
+            value: request_id
+        });
+        return;
+    }
+
+    if (!response.header || typeof response.header !== 'object') {
+        response.header = {};
+    }
+
+    response.header[DEBUG_TRACE_HEADER_NAME] = request_id;
+}
+
+function attach_debug_id_to_error_response(error, request_id) {
+    if (!error || !request_id) {
+        return;
+    }
+
+    if (error && typeof error === 'object' && error.response && typeof error.response === 'object') {
+        attach_debug_id_header(error.response, request_id);
+    }
+
+    if (is_response_like_object(error)) {
+        attach_debug_id_header(error, request_id);
+    }
+}
+
+function is_response_like_object(candidate) {
+    if (!candidate || typeof candidate !== 'object') {
+        return false;
+    }
+
+    if (typeof candidate.statusCode === 'number') {
+        return true;
+    }
+
+    return false;
 }
