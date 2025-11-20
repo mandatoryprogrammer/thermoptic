@@ -1,2 +1,4 @@
 node_modules
 chrome-profile/
+ssl/
+cassl/

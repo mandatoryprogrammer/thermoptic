@@ -1,14 +1,8 @@
-import { access, mkdir, writeFile } from 'fs/promises';
-import { constants as fs_constants } from 'fs';
-import { resolve } from 'path';
 import * as node_crypto from 'crypto';
 import * as cdp from './cdp.js';
 import * as utils from './utils.js';
 import * as logger from './logger.js';
-
-const CA_DIRECTORY_PATH = resolve('./ssl');
-const CA_CERTIFICATE_PATH = resolve('./ssl/rootCA.crt');
-const CA_PRIVATE_KEY_PATH = resolve('./ssl/rootCA.key');
+import { CA_CERTIFICATE_PATH, CA_PRIVATE_KEY_PATH, ensure_ca_material } from './certificates.js';
 const CONNECTION_STATE_TTL_MS = 15 * 60 * 1000;
 const FILTERED_RESPONSE_HEADER_NAMES = new Set(['content-encoding']);
 const HTTP2_INCOMPATIBLE_RESPONSE_HEADER_NAMES = new Set([
@@ -245,42 +239,6 @@ class MockttpProxyWrapper {
             }
         }
         this.auth_listeners_attached = true;
-    }
-}
-
-async function ensure_ca_material(proxy_logger, generateCACertificate) {
-    const [cert_exists, key_exists] = await Promise.all([
-        does_file_exist(CA_CERTIFICATE_PATH),
-        does_file_exist(CA_PRIVATE_KEY_PATH)
-    ]);
-
-    if (cert_exists && key_exists) {
-        return;
-    }
-
-    await mkdir(CA_DIRECTORY_PATH, { recursive: true });
-    proxy_logger.info('Generating root CA for thermoptic proxy.', {
-        certificate_path: CA_CERTIFICATE_PATH
-    });
-
-    const { key, cert } = await generateCACertificate({
-        subject: {
-            commonName: 'thermoptic Root CA',
-            organizationName: 'thermoptic',
-            countryName: 'US'
-        }
-    });
-
-    await writeFile(CA_PRIVATE_KEY_PATH, key, { mode: 0o600 });
-    await writeFile(CA_CERTIFICATE_PATH, cert, { mode: 0o644 });
-}
-
-async function does_file_exist(path) {
-    try {
-        await access(path, fs_constants.F_OK);
-        return true;
-    } catch {
-        return false;
     }
 }
 

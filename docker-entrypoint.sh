@@ -1,8 +1,12 @@
 #!/bin/bash
 set -e
 
-# Ensure CA certs are available in the mounted location
-cp /work/ssl/* /work/cassl/
+# Ensure CA certs exist before runtime and sync them to the mounted location
+mkdir -p /work/cassl/
+node /work/scripts/ensure-ca.js
+if compgen -G "/work/ssl/*" > /dev/null; then
+    cp /work/ssl/* /work/cassl/
+fi
 
 # Wait for Chrome DevTools Protocol to be ready
 node /work/wait-for-cdp.js
