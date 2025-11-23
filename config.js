@@ -17,6 +17,8 @@ export const ALWAYS_CLEAN_HEADERS = [
     'if-modified-since',
     'if-none-match',
     'if-unmodified-since',
+    'if-range',
+    'range',
     'attribution-reporting-eligible',
     'attribution-reporting-support',
     'cookie',
@@ -44,6 +46,7 @@ export const ALWAYS_CLEAN_HEADERS = [
     'user-agent',
     'proxy-authorization',
     'proxy-connection',
+
 ];
 
 export const ERROR_HEADER_NAME = 'X-Proxy-Error';
