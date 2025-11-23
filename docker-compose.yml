@@ -93,6 +93,9 @@ services:
       # problem as verbose statements are printed.
       DEBUG: false
 
+      # Outputs full HTTP headers for more in-depth debugging
+      TRACE: false
+
       # Hook that runs on proxy start
       # ON_START_HOOK_FILE_PATH: /work/hooks/onstart.js
 

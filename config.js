@@ -14,6 +14,9 @@ export const ALWAYS_CLEAN_HEADERS = [
     // values are allowed in CORS simple requests
     // 'content-type',
     'x-client-data',
+    'if-modified-since',
+    'if-none-match',
+    'if-unmodified-since',
     'attribution-reporting-eligible',
     'attribution-reporting-support',
     'cookie',

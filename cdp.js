@@ -35,7 +35,7 @@ ensure_unexpected_response_logging();
 const MAX_CAPTURED_UNEXPECTED_RESPONSE_BODY_BYTES = 256 * 1024;
 const UNEXPECTED_RESPONSE_CAPTURE_TIMEOUT_MS = 2000;
 const MAX_CDP_RETRY_ATTEMPTS = 3;
-const CDP_RETRY_DELAY_MS = 200;
+const CDP_RETRY_DELAY_MS = 0;
 
 function ensure_unexpected_response_logging() {
     const patch_flag = Symbol.for('thermoptic.ws.unexpected_response_patch');
@@ -374,17 +374,20 @@ async function execute_with_cdp_retries(operation_name, active_logger, operation
             last_error = error;
 
             const attempt_number = attempt + 1;
-            const retry_allowed = should_retry_cdp_error(error) && attempt < (MAX_CDP_RETRY_ATTEMPTS - 1);
+            const has_more_attempts = attempt < (MAX_CDP_RETRY_ATTEMPTS - 1);
+            const retry_classified = should_retry_cdp_error(error);
+            const retry_allowed = has_more_attempts;
 
             if (!retry_allowed) {
                 break;
             }
 
             if (active_logger && typeof active_logger.warn === 'function') {
-                active_logger.warn('Retrying CDP workflow after transient failure.', {
+                active_logger.warn('Retrying CDP workflow after failure.', {
                     operation: operation_name,
                     attempt: attempt_number,
                     next_attempt: attempt_number + 1,
+                    retry_reason: retry_classified ? 'classified_transient' : 'catch_all',
                     message: error instanceof Error ? error.message : String(error)
                 });
             }

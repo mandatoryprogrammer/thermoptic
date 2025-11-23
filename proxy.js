@@ -1,4 +1,5 @@
 import * as node_crypto from 'crypto';
+import { STATUS_CODES } from 'node:http';
 import * as cdp from './cdp.js';
 import * as utils from './utils.js';
 import * as logger from './logger.js';
@@ -13,6 +14,7 @@ const HTTP2_INCOMPATIBLE_RESPONSE_HEADER_NAMES = new Set([
     'upgrade'
 ]);
 const PROXY_AUTHENTICATION_ENABLED = Boolean(process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD);
+const TRACE_ENABLED = is_env_flag_enabled(process.env.TRACE);
 
 const connection_states = new Map();
 let mockttp_module = null;
@@ -97,6 +99,7 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
         .thenCallback(async(mockttp_request) => {
             purge_expired_connection_states();
             const is_http2_downstream = is_http2_request(mockttp_request);
+            const http_version = resolve_http_version(mockttp_request.httpVersion);
             const adapted_request = await adapt_request_for_handler(mockttp_request);
             try {
                 const handler_result = await on_request_func(adapted_request);
@@ -118,12 +121,17 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
                 const sanitized_headers = sanitize_proxy_response_headers(response.header ?? {}, {
                     strip_http2_incompatible_headers: is_http2_downstream
                 });
-                return {
+                const response_payload = {
                     statusCode: response.statusCode ?? 500,
                     statusMessage: response.statusMessage,
                     headers: sanitized_headers,
                     body: response.body
                 };
+                if (TRACE_ENABLED) {
+                    log_raw_proxy_request(adapted_request, http_version);
+                    log_raw_proxy_response(adapted_request, response, sanitized_headers, http_version);
+                }
+                return response_payload;
             } catch (handler_error) {
                 const normalized_error = handler_error instanceof Error ? handler_error : new Error(String(handler_error));
                 proxy_logger.error('Proxy request handler threw an error.', {
@@ -381,6 +389,13 @@ function normalize_protocol(protocol) {
     return protocol.endsWith(':') ? protocol.slice(0, -1) : protocol;
 }
 
+function resolve_http_version(http_version) {
+    if (typeof http_version === 'string' && http_version.trim() !== '') {
+        return http_version;
+    }
+    return '1.1';
+}
+
 function is_http2_request(request) {
     if (!request || typeof request !== 'object') {
         return false;
@@ -523,6 +538,169 @@ function validate_proxy_authorization(header_value) {
     }
 }
 
+function normalize_body_to_buffer(body) {
+    if (!body) {
+        return Buffer.alloc(0);
+    }
+    if (Buffer.isBuffer(body)) {
+        return body;
+    }
+    if (typeof body === 'string') {
+        return Buffer.from(body);
+    }
+    if (ArrayBuffer.isView(body)) {
+        return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+    }
+    if (body instanceof ArrayBuffer) {
+        return Buffer.from(body);
+    }
+    if (typeof body === 'object' && body.type === 'Buffer' && Array.isArray(body.data)) {
+        return Buffer.from(body.data);
+    }
+
+    try {
+        return Buffer.from(body);
+    } catch {
+        return Buffer.from(String(body));
+    }
+}
+
+function log_raw_proxy_request(request, http_version) {
+    try {
+        const request_options = request.requestOptions || {};
+        const method = request_options.method || request.original_request?.method || 'GET';
+        const path = request_options.path || request.original_request?.path || '/';
+        const header_pairs = extract_request_headers(request);
+        const header_lines = header_pairs.map(([name, value]) => `${name}: ${value !== undefined ? String(value) : ''}`);
+
+        const body_buffer = normalize_body_to_buffer(request.requestData);
+
+        const parts = [
+            Buffer.from(`${method} ${path} HTTP/${http_version}\r\n`)
+        ];
+
+        if (header_lines.length > 0) {
+            parts.push(Buffer.from(header_lines.join('\r\n')));
+        }
+
+        parts.push(Buffer.from('\r\n\r\n'));
+        parts.push(body_buffer);
+
+        const payload = Buffer.concat(parts);
+
+        process.stdout.write('----- BEGIN PROXY RAW REQUEST -----\n');
+        process.stdout.write(payload);
+        process.stdout.write('\n----- END PROXY RAW REQUEST -----\n');
+    } catch (trace_error) {
+        process.stdout.write(`TRACE logging failed for request: ${trace_error instanceof Error ? trace_error.message : String(trace_error)}\n`);
+    }
+}
+
+function log_raw_proxy_response(request, response, sanitized_headers, http_version) {
+    try {
+        const status_code = response.statusCode ?? 500;
+        const status_message = response.statusMessage || STATUS_CODES[status_code] || '';
+        const header_lines = [];
+
+        Object.entries(sanitized_headers || {}).forEach(([header_name, header_value]) => {
+            header_lines.push(`${header_name}: ${header_value}`);
+        });
+
+        const body_buffer = normalize_body_to_buffer(response.body);
+
+        const parts = [
+            Buffer.from(`HTTP/${http_version} ${status_code} ${status_message}\r\n`)
+        ];
+
+        if (header_lines.length > 0) {
+            parts.push(Buffer.from(header_lines.join('\r\n')));
+        }
+
+        parts.push(Buffer.from('\r\n\r\n'));
+        parts.push(body_buffer);
+
+        const payload = Buffer.concat(parts);
+
+        process.stdout.write('----- BEGIN PROXY RAW RESPONSE -----\n');
+        process.stdout.write(payload);
+        process.stdout.write('\n----- END PROXY RAW RESPONSE -----\n');
+    } catch (trace_error) {
+        process.stdout.write(`TRACE logging failed for response: ${trace_error instanceof Error ? trace_error.message : String(trace_error)}\n`);
+    }
+}
+
+function extract_request_headers(request) {
+    const header_sources = [
+        request?._req?.rawHeaders,
+        request?.original_request?.rawHeaders,
+        request?.original_request?.headers,
+        request?.requestOptions?.headers
+    ];
+
+    for (const source of header_sources) {
+        const normalized = normalize_header_pairs(source);
+        if (normalized.length > 0) {
+            return normalized;
+        }
+    }
+
+    return [];
+}
+
+function normalize_header_pairs(source) {
+    if (!source) {
+        return [];
+    }
+
+    if (source instanceof Map) {
+        const map_pairs = [];
+        source.forEach((value, name) => {
+            map_pairs.push([String(name), value !== undefined ? String(value) : '']);
+        });
+        return map_pairs;
+    }
+
+    if (Array.isArray(source)) {
+        if (source.length > 0 && source.every(entry => typeof entry === 'string')) {
+            const pairs = [];
+            for (let i = 0; i < source.length; i += 2) {
+                const name = source[i];
+                const value = source[i + 1];
+                if (typeof name !== 'string') {
+                    continue;
+                }
+                pairs.push([name, value !== undefined ? String(value) : '']);
+            }
+            return pairs;
+        }
+
+        const pairs = [];
+        for (const entry of source) {
+            if (Array.isArray(entry) && entry.length >= 2) {
+                pairs.push([String(entry[0]), entry[1] !== undefined ? String(entry[1]) : '']);
+                continue;
+            }
+            if (entry && typeof entry === 'object') {
+                const name = typeof entry.name === 'string' ? entry.name : (typeof entry.key === 'string' ? entry.key : undefined);
+                if (!name) {
+                    continue;
+                }
+                const value = entry.value !== undefined ? entry.value : (entry.val !== undefined ? entry.val : '');
+                pairs.push([name, value !== undefined ? String(value) : '']);
+            }
+        }
+        if (pairs.length > 0) {
+            return pairs;
+        }
+    }
+
+    if (typeof source === 'object') {
+        return Object.entries(source).map(([name, value]) => [name, value !== undefined ? String(value) : '']);
+    }
+
+    return [];
+}
+
 async function load_mockttp() {
     if (!mockttp_module) {
         mockttp_module = await import('mockttp');
@@ -541,4 +719,15 @@ function seed_global_crypto() {
     if (typeof globalThis.crypto.randomUUID !== 'function' && typeof node_crypto.randomUUID === 'function') {
         globalThis.crypto.randomUUID = node_crypto.randomUUID.bind(node_crypto);
     }
+}
+
+function is_env_flag_enabled(value) {
+    if (typeof value === 'undefined') {
+        return false;
+    }
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized === '' || normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no') {
+        return false;
+    }
+    return true;
 }
