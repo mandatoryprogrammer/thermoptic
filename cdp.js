@@ -1846,7 +1846,10 @@ function get_cdp_config() {
 }
 
 export async function start_browser_session() {
-    return CDP(get_cdp_config());
+    const attempt_connection = async () => {
+        return await CDP(get_cdp_config());
+    };
+    return await execute_with_cdp_retries('start_browser_session', cdp_logger, attempt_connection);
 }
 
 export async function new_tab(browser, initial_url = 'about:blank') {
