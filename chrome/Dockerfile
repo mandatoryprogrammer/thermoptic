@@ -34,8 +34,8 @@ RUN mkdir -p /home/chromeuser/profile && chown -R 1001:1001 /home/chromeuser/pro
 RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 RUN dbus-uuidgen > /etc/machine-id
 
-# Switch to non-root user (using numeric UID/GID)
-USER 1001:1001
+# Keep root here so start.sh can repair bind mount ownership,
+# then drop privileges to chromeuser before launching Chrome.
 
 # Set environment variables
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD true

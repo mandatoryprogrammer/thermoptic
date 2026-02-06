@@ -23,7 +23,8 @@ services:
     depends_on:
       - proxyrouter
     volumes:
-      - ./chrome-profile:/home/chromeuser/profile
+      # Named volume avoids host bind-mount ownership drift that can block Chrome startup.
+      - chrome_profile:/home/chromeuser/profile
     environment:
       PORT: 3003
       CHROME_CONTROL_PORT: 9223
@@ -129,3 +130,6 @@ services:
       # Port of the Chrome "controller" service which is used
       # to restart Chrome in the event of a freeze/jam.
       CHROME_CONTROL_PORT: 9223
+
+volumes:
+  chrome_profile:

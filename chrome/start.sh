@@ -27,6 +27,48 @@ CHROME_PROFILE_DIR=${CHROME_PROFILE_DIR:-/home/chromeuser/profile}
 CHROME_SCREEN_WIDTH=${CHROME_SCREEN_WIDTH:-1920}
 CHROME_SCREEN_HEIGHT=${CHROME_SCREEN_HEIGHT:-1080}
 LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
+CHROME_BOOTSTRAP_USER=${CHROME_BOOTSTRAP_USER:-chromeuser}
+CHROME_BOOTSTRAP_UID=${CHROME_BOOTSTRAP_UID:-1001}
+CHROME_BOOTSTRAP_GID=${CHROME_BOOTSTRAP_GID:-1001}
+
+if [ "$(id -u)" -eq 0 ]; then
+  mkdir -p "${XDG_RUNTIME_DIR}" "${CHROME_PROFILE_DIR}"
+  if ! chown -R "${CHROME_BOOTSTRAP_UID}:${CHROME_BOOTSTRAP_GID}" "${XDG_RUNTIME_DIR}" "${CHROME_PROFILE_DIR}" 2>/dev/null; then
+    echo "[WARN] Unable to set ownership on Chrome runtime/profile directories. Continuing."
+  fi
+  chmod 700 "${XDG_RUNTIME_DIR}" "${CHROME_PROFILE_DIR}" 2>/dev/null || true
+
+  if command -v su >/dev/null 2>&1; then
+    if ! su -s /bin/bash -c "test -w \"${CHROME_PROFILE_DIR}\"" "${CHROME_BOOTSTRAP_USER}" >/dev/null 2>&1; then
+      fallback_profile_dir="/tmp/chrome-profile"
+      echo "[WARN] Profile directory ${CHROME_PROFILE_DIR} is not writable by ${CHROME_BOOTSTRAP_USER}. Falling back to ${fallback_profile_dir}."
+      CHROME_PROFILE_DIR="${fallback_profile_dir}"
+      mkdir -p "${CHROME_PROFILE_DIR}"
+      chown -R "${CHROME_BOOTSTRAP_UID}:${CHROME_BOOTSTRAP_GID}" "${CHROME_PROFILE_DIR}" 2>/dev/null || true
+      chmod 700 "${CHROME_PROFILE_DIR}" 2>/dev/null || true
+    fi
+  else
+    echo "[WARN] 'su' is unavailable. Skipping non-root write validation for the profile directory."
+  fi
+
+  export CHROME_PROFILE_DIR
+  export XDG_RUNTIME_DIR
+  bootstrap_home="/home/${CHROME_BOOTSTRAP_USER}"
+  if command -v getent >/dev/null 2>&1; then
+    resolved_home="$(getent passwd "${CHROME_BOOTSTRAP_USER}" | cut -d: -f6)"
+    if [ -n "${resolved_home}" ]; then
+      bootstrap_home="${resolved_home}"
+    fi
+  fi
+  export HOME="${bootstrap_home}"
+  export USER="${CHROME_BOOTSTRAP_USER}"
+  export LOGNAME="${CHROME_BOOTSTRAP_USER}"
+  if command -v su >/dev/null 2>&1; then
+    exec su -m -s /bin/bash "${CHROME_BOOTSTRAP_USER}" -c "/app/start.sh"
+  fi
+  echo "[WARN] 'su' is unavailable. Continuing to run Chrome as root."
+fi
+
 CHROME_COMMON_FLAGS=(
   --remote-debugging-port=3002
   --remote-debugging-address=0.0.0.0
