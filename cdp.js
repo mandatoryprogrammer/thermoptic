@@ -1845,8 +1845,46 @@ function get_cdp_config() {
     }
 }
 
+function get_browser_websocket_url(version_payload) {
+    if (!version_payload || typeof version_payload !== 'object') {
+        return null;
+    }
+
+    const ws_url = version_payload.webSocketDebuggerUrl;
+    if (!ws_url || typeof ws_url !== 'string' || !ws_url.includes('/devtools/browser/')) {
+        return null;
+    }
+
+    return ws_url;
+}
+
 export async function start_browser_session() {
-    return CDP(get_cdp_config());
+    const cdp_config = get_cdp_config();
+
+    try {
+        const version_payload = await CDP.Version(cdp_config);
+        const browser_websocket_url = get_browser_websocket_url(version_payload);
+
+        if (browser_websocket_url) {
+            return CDP({
+                target: browser_websocket_url
+            });
+        }
+
+        cdp_logger.warn('CDP version payload did not include a browser websocket URL; falling back to default connection mode.', {
+            host: cdp_config.host,
+            port: cdp_config.port
+        });
+    } catch (err) {
+        cdp_logger.warn('Failed to resolve browser websocket URL; falling back to default connection mode.', {
+            host: cdp_config.host,
+            port: cdp_config.port,
+            message: err && err.message ? err.message : String(err),
+            stack: err && err.stack ? err.stack : undefined
+        });
+    }
+
+    return CDP(cdp_config);
 }
 
 export async function new_tab(browser, initial_url = 'about:blank') {
