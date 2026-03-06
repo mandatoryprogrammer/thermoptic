@@ -376,9 +376,16 @@ async function execute_with_cdp_retries(operation_name, active_logger, operation
             const attempt_number = attempt + 1;
             const has_more_attempts = attempt < (MAX_CDP_RETRY_ATTEMPTS - 1);
             const retry_classified = should_retry_cdp_error(error);
-            const retry_allowed = has_more_attempts;
+            const retry_allowed = has_more_attempts && retry_classified;
 
             if (!retry_allowed) {
+                if (has_more_attempts && active_logger && typeof active_logger.warn === 'function') {
+                    active_logger.warn('CDP workflow failed; skipping retry for non-transient error.', {
+                        operation: operation_name,
+                        attempt: attempt_number,
+                        message: error instanceof Error ? error.message : String(error)
+                    });
+                }
                 break;
             }
 
@@ -387,7 +394,7 @@ async function execute_with_cdp_retries(operation_name, active_logger, operation
                     operation: operation_name,
                     attempt: attempt_number,
                     next_attempt: attempt_number + 1,
-                    retry_reason: retry_classified ? 'classified_transient' : 'catch_all',
+                    retry_reason: 'classified_transient',
                     message: error instanceof Error ? error.message : String(error)
                 });
             }

@@ -113,13 +113,20 @@ process.on('uncaughtException', (err) => {
 
                 // We now check if there is an after-request hook defined.
                 if (process.env.AFTER_REQUEST_HOOK_FILE_PATH) {
-                    if (!cdp_instance) {
-                        cdp_instance = await cdp.start_browser_session();
+                    try {
+                        if (!cdp_instance) {
+                            cdp_instance = await cdp.start_browser_session();
+                        }
+                        request_logger.info('Executing after-request hook.', {
+                            hook_file: process.env.AFTER_REQUEST_HOOK_FILE_PATH
+                        });
+                        await utils.run_hook_file(process.env.AFTER_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, response, request_logger);
+                    } catch (after_hook_error) {
+                        request_logger.warn('After-request hook failed; returning response without hook effects.', {
+                            message: after_hook_error instanceof Error ? after_hook_error.message : String(after_hook_error),
+                            stack: after_hook_error instanceof Error ? after_hook_error.stack : undefined
+                        });
                     }
-                    request_logger.info('Executing after-request hook.', {
-                        hook_file: process.env.AFTER_REQUEST_HOOK_FILE_PATH
-                    });
-                    await utils.run_hook_file(process.env.AFTER_REQUEST_HOOK_FILE_PATH, cdp_instance, proxy_request, response, request_logger);
                 }
 
                 attach_debug_id_header(response, request_id);
