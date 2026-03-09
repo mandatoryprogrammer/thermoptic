@@ -1588,7 +1588,7 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
 export async function manual_browser_visit(url) {
     const attempt_visit = async () => {
         const browser = await start_browser_session();
-        const new_tab_info = await new_tab(browser, 'chrome://bookmarks-side-panel.top-chrome/');
+        const new_tab_info = await new_tab(browser, 'about:blank');
         const tab = new_tab_info.tab;
 
         try {
@@ -1631,155 +1631,111 @@ export async function manual_browser_visit(url) {
 async function _manual_browser_visit(tab, url) {
     return new Promise((outerResolve, outerReject) => {
         let settled = false;
+        let capture_url = url;
 
-        const resolve = (val) => {
+        try {
+            const parsed_url = new URL(url);
+            parsed_url.hash = '';
+            capture_url = parsed_url.toString();
+        } catch {
+            capture_url = url;
+        }
+
+        const resolve = async (val) => {
             if (!settled) {
                 settled = true;
+                try {
+                    await tab.Fetch.disable();
+                } catch {
+                    // Best-effort cleanup only.
+                }
                 outerResolve(val);
             }
         };
 
-        const reject = (err) => {
+        const reject = async (err) => {
             if (!settled) {
                 settled = true;
+                try {
+                    await tab.Fetch.disable();
+                } catch {
+                    // Best-effort cleanup only.
+                }
                 outerReject(err instanceof Error ? err : new Error(String(err)));
             }
         };
 
-        // Timeout rejection
         timeout_action(() => reject(new Error('TIMEOUT')));
 
         (async() => {
             try {
-                // Close the tab, delete the bookmark
-                async function clean_up() {
-                    if (bookmark_id_to_cleanup === -1) {
-                        cdp_logger.error('Bookmark ID is -1 during cleanup.', {
-                            context: 'manual_browser_visit_cleanup'
-                        });
-                        return;
-                    }
-                    await delete_chrome_bookmark_by_id(bookmark_id_to_cleanup);
-                }
+                const { Fetch, Page } = tab;
 
-                const { Runtime, Fetch, Page } = tab;
-
-                // Catch the response so the request is side-effect free.
                 await Fetch.enable({
-                    patterns: [{ urlPattern: '*', requestStage: 'Response' }]
+                    patterns: [{ urlPattern: capture_url, requestStage: 'Response' }]
                 });
 
                 Fetch.requestPaused(async({ requestId, responseStatusCode, responseHeaders, responseErrorReason }) => {
-                    // Our request failed for some reason
-                    if (responseErrorReason) {
-                        resolve({
-                            statusCode: 502,
-                            header: {
-                                [config.ERROR_HEADER_NAME]: `Request error: ${responseErrorReason}`
-                            },
-                            body: ''
-                        });
-                        return;
-                    }
-
-                    let raw_body = Buffer.alloc(0);
-                    if (!REDIRECT_STATUS_CODES.includes(responseStatusCode)) {
-                        const response_tmp = await Fetch.getResponseBody({ requestId });
-                        if (response_tmp.base64Encoded) {
-                            raw_body = Buffer.from(response_tmp.body, 'base64');
-                        } else {
-                            raw_body = Buffer.from(response_tmp.body, 'utf8');
+                    try {
+                        if (responseErrorReason) {
+                            await resolve({
+                                statusCode: 502,
+                                header: {
+                                    [config.ERROR_HEADER_NAME]: `Request error: ${responseErrorReason}`
+                                },
+                                body: ''
+                            });
+                            return;
                         }
-                    }
 
-                    // Send a NOP response so the request is side-effect free.
-                    await Fetch.fulfillRequest({
-                        requestId,
-                        responseCode: 200,
-                        responseHeaders: [{ name: 'Content-Type', value: 'text/html' }],
-                        body: Buffer.from(fetchgen.get_blank_response()).toString('base64'),
-                    });
+                        let raw_body = Buffer.alloc(0);
+                        if (!REDIRECT_STATUS_CODES.includes(responseStatusCode)) {
+                            const response_tmp = await Fetch.getResponseBody({ requestId });
+                            if (response_tmp.base64Encoded) {
+                                raw_body = Buffer.from(response_tmp.body, 'base64');
+                            } else {
+                                raw_body = Buffer.from(response_tmp.body, 'utf8');
+                            }
+                        }
 
-                    // Return formatted proxy response
-                    await clean_up();
-                    const normalized_headers = utils.fetch_headers_to_proxy_response_headers(responseHeaders);
-                    if (typeof normalized_headers['content-length'] !== 'undefined') {
-                        normalized_headers['content-length'] = String(raw_body.length);
-                    }
-                    if (typeof normalized_headers['Content-Length'] !== 'undefined') {
-                        normalized_headers['Content-Length'] = String(raw_body.length);
-                    }
-                    delete normalized_headers['content-encoding'];
-                    delete normalized_headers['Content-Encoding'];
+                        await Fetch.fulfillRequest({
+                            requestId,
+                            responseCode: 200,
+                            responseHeaders: [{ name: 'Content-Type', value: 'text/html' }],
+                            body: Buffer.from(fetchgen.get_blank_response()).toString('base64'),
+                        });
 
-                    cdp_logger.debug('Captured response headers.', {
-                        headers: normalized_headers,
-                        body_length: raw_body.length
-                    });
-                    resolve({
-                        statusCode: responseStatusCode,
-                        header: normalized_headers,
-                        body: raw_body
-                    });
+                        const normalized_headers = utils.fetch_headers_to_proxy_response_headers(responseHeaders);
+                        if (typeof normalized_headers['content-length'] !== 'undefined') {
+                            normalized_headers['content-length'] = String(raw_body.length);
+                        }
+                        if (typeof normalized_headers['Content-Length'] !== 'undefined') {
+                            normalized_headers['Content-Length'] = String(raw_body.length);
+                        }
+                        delete normalized_headers['content-encoding'];
+                        delete normalized_headers['Content-Encoding'];
+
+                        cdp_logger.debug('Captured response headers.', {
+                            headers: normalized_headers,
+                            body_length: raw_body.length
+                        });
+                        await resolve({
+                            statusCode: responseStatusCode,
+                            header: normalized_headers,
+                            body: raw_body
+                        });
+                    } catch (err) {
+                        await reject(err);
+                    }
                 });
 
-                await Runtime.enable();
                 await Page.enable();
-
-                await new Promise(resolveLoad => {
-                    Page.loadEventFired(() => resolveLoad());
-                });
-
-                let bookmark_id_to_cleanup = -1;
-
-                const create_bookmark_script = `
-(async () => {
-    async function create_bookmark(url) {
-        const proxy = await import('chrome://bookmarks-side-panel.top-chrome/bookmarks_api_proxy.js');
-        const booker = proxy.BookmarksApiProxyImpl.getInstance();
-
-        const top_level_folder = document.querySelector("body > power-bookmarks-list").getParentFolder_();
-        booker.bookmarkCurrentTabInFolder(top_level_folder.id);
-
-        const created_bookmarks = await chrome.bookmarks.getRecent(1);
-        const created_bookmark = created_bookmarks[0];
-        chrome.bookmarks.update(created_bookmark.id, {
-            title: 'tmpBookmark',
-            url: url
-        });
-        return created_bookmark.id;
-    }
-
-    return create_bookmark(${JSON.stringify(url)});
-})();
-                `;
-
-                const create_bookmark_result = await Runtime.evaluate({
-                    expression: create_bookmark_script,
-                    awaitPromise: true
-                });
-                bookmark_id_to_cleanup = create_bookmark_result.result.value;
-
-                const visit_bookmark_script = `
-(async () => {
-    const proxy = await import('chrome://bookmarks-side-panel.top-chrome/bookmarks_api_proxy.js');
-    const booker = proxy.BookmarksApiProxyImpl.getInstance();
-    booker.openBookmark(parseInt(JSON.stringify(${bookmark_id_to_cleanup})), 0, {
-        "middleButton": false,
-        "altKey": false,
-        "ctrlKey": false,
-        "metaKey": false,
-        "shiftKey": false
-    }, 0);
-})();
-                `;
-
-                await Runtime.evaluate({
-                    expression: visit_bookmark_script,
-                    awaitPromise: true
-                });
+                const navigation_result = await Page.navigate({ url: capture_url });
+                if (navigation_result && navigation_result.errorText) {
+                    throw new Error(navigation_result.errorText);
+                }
             } catch (err) {
-                reject(err);
+                await reject(err);
             }
         })();
     });

@@ -1,10 +1,19 @@
 import CDP from 'chrome-remote-interface';
 import * as logger from '../logger.js';
+import * as requestengine from '../requestengine.js';
 
 const captcha_solve_required_text = 'Verify you are human by completing the action below.';
 const javascript_check_text = 'Verifying you are human. This may take a few seconds';
 const challenge_script_indicator = '/cdn-cgi/challenge-platform/';
+const security_verification_text = 'Performing security verification';
+const security_verification_description = 'This website uses a security service to protect against malicious bots.';
+const verification_success_waiting_text = 'Verification successful. Waiting for';
+const challenge_title_text = 'Just a moment...';
 const cloudflare_solver_timeout_ms = 45000;
+const cloudflare_solver_poll_interval_ms = 1000;
+const cloudflare_post_click_wait_ms = 2500;
+const cloudflare_min_click_spacing_ms = 2000;
+const cloudflare_reload_delay_ms = 12000;
 const cdp_attach_retry_delay_ms = 250;
 const cdp_attach_max_attempts = 3;
 const challenge_status_codes = new Set([403, 429, 503]);
@@ -138,8 +147,12 @@ function is_cloudflare_challenge_response(response) {
     const has_challenge_marker = normalized_body.includes(challenge_script_indicator) ||
         body_string.includes(captcha_solve_required_text) ||
         body_string.includes(javascript_check_text) ||
+        body_string.includes(security_verification_text) ||
+        body_string.includes(security_verification_description) ||
+        body_string.includes(verification_success_waiting_text) ||
         normalized_body.includes('window._cf_chl_opt') ||
-        normalized_body.includes('just a moment');
+        normalized_body.includes('just a moment') ||
+        normalized_body.includes('cf-turnstile-response');
 
     if (!has_challenge_marker) {
         return false;
@@ -154,6 +167,23 @@ function is_cloudflare_challenge_response(response) {
     }
 
     return is_html_response(response.header);
+}
+
+function has_cloudflare_challenge_marker(html) {
+    if (!html || typeof html !== 'string') {
+        return false;
+    }
+
+    const normalized_html = html.toLowerCase();
+    return normalized_html.includes(challenge_script_indicator) ||
+        html.includes(captcha_solve_required_text) ||
+        html.includes(javascript_check_text) ||
+        html.includes(security_verification_text) ||
+        html.includes(security_verification_description) ||
+        html.includes(verification_success_waiting_text) ||
+        normalized_html.includes('window._cf_chl_opt') ||
+        normalized_html.includes('just a moment') ||
+        normalized_html.includes('cf-turnstile-response');
 }
 
 function build_request_url(request) {
@@ -187,120 +217,329 @@ function build_request_url(request) {
     return `${protocol}://${hostname}${port}${path}`;
 }
 
+function request_headers_to_array(request) {
+    const raw_headers = request?._req?.rawHeaders;
+    if (Array.isArray(raw_headers) && raw_headers.length > 0) {
+        const result = [];
+        for (let i = 0; i < raw_headers.length; i += 2) {
+            result.push({
+                key: raw_headers[i],
+                value: raw_headers[i + 1],
+            });
+        }
+        return result;
+    }
+
+    const headers = request?.requestOptions?.headers;
+    if (!headers || typeof headers !== 'object') {
+        return [];
+    }
+
+    return Object.entries(headers).map(([key, value]) => ({
+        key: key,
+        value: Array.isArray(value) ? value.join(', ') : String(value)
+    }));
+}
+
+async function replay_request_after_cloudflare(request, hook_logger) {
+    const target_url = build_request_url(request);
+    if (!target_url) {
+        return null;
+    }
+
+    return requestengine.process_request(
+        hook_logger,
+        target_url,
+        request.protocol,
+        request?.requestOptions?.method || 'GET',
+        request?.requestOptions?.path || '/',
+        request_headers_to_array(request),
+        request?.requestData || null
+    );
+}
+
+function overwrite_response(target_response, source_response) {
+    target_response.statusCode = source_response.statusCode;
+    target_response.header = source_response.header;
+    target_response.body = source_response.body;
+}
+
+function build_solver_url(target_url) {
+    try {
+        const parsed_url = new URL(target_url);
+        parsed_url.pathname = '/';
+        parsed_url.search = '';
+        parsed_url.hash = '';
+        return parsed_url.toString();
+    } catch {
+        return target_url;
+    }
+}
+
+function attrs_to_object(attributes) {
+    const attr_map = {};
+    for (let i = 0; i < attributes.length; i += 2) {
+        attr_map[attributes[i]] = attributes[i + 1];
+    }
+    return attr_map;
+}
+
+function extract_title_text_from_html(html) {
+    if (!html || typeof html !== 'string') {
+        return '';
+    }
+
+    const title_match = html.match(/<title>([^<]*)<\/title>/i);
+    if (!title_match) {
+        return '';
+    }
+
+    return title_match[1].trim();
+}
+
+function is_verified_page_state(page_state) {
+    if (!page_state || typeof page_state !== 'object') {
+        return false;
+    }
+
+    if (page_state.challenge_active || page_state.response_input_present) {
+        return false;
+    }
+
+    if (page_state.cf_clearance_present) {
+        return true;
+    }
+
+    return Boolean(page_state.title_text) && page_state.title_text !== challenge_title_text;
+}
+
+async function get_turnstile_host_node_id(DOM, root_node_id) {
+    const { nodeIds: div_node_ids } = await DOM.querySelectorAll({
+        nodeId: root_node_id,
+        selector: 'div'
+    });
+
+    for (const node_id of div_node_ids) {
+        const { attributes } = await DOM.getAttributes({ nodeId: node_id });
+        const attrs = attrs_to_object(attributes);
+
+        if (attrs.style && attrs.style.includes('display: grid')) {
+            return node_id;
+        }
+    }
+
+    return null;
+}
+
+async function get_page_state(client, probe_url) {
+    const { DOM, Network } = client;
+
+    const { root } = await DOM.getDocument({ depth: -1, pierce: true });
+    const { outerHTML } = await DOM.getOuterHTML({ nodeId: root.nodeId });
+    const response_input = await DOM.querySelector({
+        nodeId: root.nodeId,
+        selector: 'input[name="cf-turnstile-response"]'
+    });
+    const success_container = await DOM.querySelector({
+        nodeId: root.nodeId,
+        selector: '#YtLM0'
+    });
+
+    let success_visible = false;
+    if (success_container.nodeId) {
+        const { attributes } = await DOM.getAttributes({ nodeId: success_container.nodeId });
+        const attrs = attrs_to_object(attributes);
+        success_visible = !(attrs.style || '').includes('display: none');
+    }
+
+    const challenge_host_node_id = await get_turnstile_host_node_id(DOM, root.nodeId);
+    let challenge_host_box_model = null;
+    if (challenge_host_node_id) {
+        try {
+            const { model } = await DOM.getBoxModel({ nodeId: challenge_host_node_id });
+            challenge_host_box_model = model;
+        } catch {
+            challenge_host_box_model = null;
+        }
+    }
+
+    const cookies = await Network.getCookies({
+        urls: [probe_url]
+    });
+
+    return {
+        title_text: extract_title_text_from_html(outerHTML),
+        challenge_active: has_cloudflare_challenge_marker(outerHTML),
+        response_input_present: Boolean(response_input.nodeId),
+        challenge_host_node_id: challenge_host_node_id,
+        challenge_host_box_model: challenge_host_box_model,
+        success_visible: success_visible,
+        cf_clearance_present: cookies.cookies.some((cookie) => cookie.name === 'cf_clearance'),
+        cf_cookie_names: cookies.cookies
+            .filter((cookie) => cookie.name.startsWith('cf_'))
+            .map((cookie) => cookie.name)
+    };
+}
+
+async function click_challenge_host(client, page_state, hook_logger) {
+    if (!page_state || !page_state.challenge_host_box_model) {
+        return false;
+    }
+
+    const { Input } = client;
+    const model = page_state.challenge_host_box_model;
+    const x_top_left = model.content[0];
+    const y_top_left = model.content[1];
+    const y_bottom_left = model.content[7];
+
+    const click_x = (x_top_left + 25) + rand_int(-2, 2);
+    const click_y = ((y_top_left + y_bottom_left) / 2) + rand_int(-2, 2);
+
+    hook_logger.info('Clicking Cloudflare challenge host to advance verification.', {
+        click_x: click_x,
+        click_y: click_y
+    });
+
+    await Input.dispatchMouseEvent({
+        type: 'mousePressed',
+        x: click_x,
+        y: click_y,
+        button: 'left',
+        clickCount: 1
+    });
+
+    await Input.dispatchMouseEvent({
+        type: 'mouseReleased',
+        x: click_x,
+        y: click_y,
+        button: 'left',
+        clickCount: 1
+    });
+
+    return true;
+}
+
 async function solve_cloudflare_challenge(cdp, target_url, hook_logger) {
     const { Target } = cdp;
     const { targetId } = await Target.createTarget({ url: 'about:blank' });
     let client = null;
+    const solver_url = build_solver_url(target_url);
 
     try {
         client = await connect_to_target(targetId, hook_logger);
-        const { Page, DOM, Input } = client;
+        const { Page, DOM, Network } = client;
 
         await Page.enable();
         await DOM.enable();
+        await Network.enable();
 
         hook_logger.info('Cloudflare challenge detected, opening browser to clear it.', {
-            target_url: target_url
+            target_url: target_url,
+            solver_url: solver_url
         });
 
-        await Page.navigate({ url: target_url });
+        await Page.navigate({ url: solver_url });
         await Page.loadEventFired();
+        await Page.bringToFront();
 
         const start_time = Date.now();
+        let click_attempts = 0;
+        let last_click_timestamp = 0;
+        let last_reload_timestamp = Date.now();
+        let last_state_signature = '';
+
         while (true) {
             if ((Date.now() - start_time) > cloudflare_solver_timeout_ms) {
                 hook_logger.warn('Timed out while waiting for Cloudflare challenge to finish.', {
                     target_url: target_url,
-                    timeout_ms: cloudflare_solver_timeout_ms
+                    timeout_ms: cloudflare_solver_timeout_ms,
+                    click_attempts: click_attempts
                 });
                 break;
             }
 
-            let outer_html = '';
+            let page_state = null;
             try {
-                const { root } = await DOM.getDocument({ depth: -1 });
-                const result = await DOM.getOuterHTML({ nodeId: root.nodeId });
-                outer_html = result.outerHTML || '';
-            } catch (e) {
+                page_state = await get_page_state(client, solver_url);
+            } catch (_error) {
                 await sleep(250);
                 continue;
             }
 
-            if (outer_html.includes(captcha_solve_required_text)) {
-                hook_logger.info('A Cloudflare turnstile CAPTCHA has appeared, attempting to click through it.');
+            const state_signature = JSON.stringify({
+                title_text: page_state.title_text,
+                challenge_active: page_state.challenge_active,
+                response_input_present: page_state.response_input_present,
+                challenge_host_present: Boolean(page_state.challenge_host_node_id),
+                success_visible: page_state.success_visible,
+                cf_clearance_present: page_state.cf_clearance_present,
+                cf_cookie_names: page_state.cf_cookie_names
+            });
 
-                const fuzzy_wait_ms = rand_int((1000 * 1.5), (1000 * 5));
-                hook_logger.debug('Waiting before clicking CAPTCHA to avoid robotic timing.', {
-                    wait_ms: fuzzy_wait_ms
+            if (state_signature !== last_state_signature) {
+                hook_logger.debug('Observed Cloudflare solver page state.', JSON.parse(state_signature));
+                last_state_signature = state_signature;
+            }
+
+            if (is_verified_page_state(page_state)) {
+                hook_logger.info('Cloudflare challenge appears cleared in live browser tab.', {
+                    target_url: target_url,
+                    title_text: page_state.title_text,
+                    cf_clearance_present: page_state.cf_clearance_present
                 });
-                await sleep(fuzzy_wait_ms);
+                return {
+                    solved: true
+                };
+            }
 
-                const { root: { nodeId: document_node_id } } = await DOM.getDocument({ depth: -1, pierce: true });
-                const { nodeIds: div_node_ids } = await DOM.querySelectorAll({
-                    nodeId: document_node_id,
-                    selector: 'div'
-                });
+            const now = Date.now();
+            const enough_time_since_last_click = (now - last_click_timestamp) >= cloudflare_min_click_spacing_ms;
+            const should_click = page_state.challenge_active &&
+                page_state.challenge_host_node_id &&
+                enough_time_since_last_click;
 
-                let target_node_id = null;
-
-                for (const node_id of div_node_ids) {
-                    const { attributes } = await DOM.getAttributes({ nodeId: node_id });
-
-                    const attrs = {};
-                    for (let i = 0; i < attributes.length; i += 2) {
-                        attrs[attributes[i]] = attributes[i + 1];
-                    }
-
-                    if (attrs.style && attrs.style.includes('display: grid')) {
-                        target_node_id = node_id;
-                        break;
-                    }
+            if (should_click) {
+                if (click_attempts === 0) {
+                    const fuzzy_wait_ms = rand_int((1000 * 1.5), (1000 * 5));
+                    hook_logger.debug('Waiting before clicking challenge host to avoid robotic timing.', {
+                        wait_ms: fuzzy_wait_ms
+                    });
+                    await sleep(fuzzy_wait_ms);
                 }
 
-                if (target_node_id) {
-                    const { model } = await DOM.getBoxModel({ nodeId: target_node_id });
-
-                    const x_top_left = model.content[0];
-                    const y_top_left = model.content[1];
-                    const x_bottom_left = model.content[6];
-                    const y_bottom_left = model.content[7];
-
-                    const click_x = (x_top_left + 25) + rand_int(-5, 5);
-                    const click_y = ((y_top_left + y_bottom_left) / 2) + rand_int(-5, 5);
-
-                    hook_logger.debug('Clicking CAPTCHA checkbox.', {
-                        click_x: click_x,
-                        click_y: click_y
-                    });
-
-                    await Input.dispatchMouseEvent({
-                        type: 'mousePressed',
-                        x: click_x,
-                        y: click_y,
-                        button: 'left',
-                        clickCount: 1
-                    });
-
-                    await Input.dispatchMouseEvent({
-                        type: 'mouseReleased',
-                        x: click_x,
-                        y: click_y,
-                        button: 'left',
-                        clickCount: 1
-                    });
-
-                    hook_logger.debug('Clicked CAPTCHA checkbox, waiting briefly for verification.');
-                    await sleep((1000 * 2));
+                await Page.bringToFront();
+                const clicked = await click_challenge_host(client, page_state, hook_logger);
+                if (clicked) {
+                    click_attempts += 1;
+                    last_click_timestamp = Date.now();
+                    await sleep(cloudflare_post_click_wait_ms);
+                    continue;
                 }
             }
 
-            if (!outer_html.includes(javascript_check_text) && !outer_html.includes(captcha_solve_required_text)) {
-                hook_logger.info('Passed Cloudflare JavaScript check, continuing.');
-                break;
+            const should_reload = page_state.challenge_active &&
+                !page_state.challenge_host_node_id &&
+                page_state.cf_clearance_present &&
+                ((now - last_reload_timestamp) >= cloudflare_reload_delay_ms);
+
+            if (should_reload) {
+                hook_logger.info('Cloudflare clearance cookie is present, reloading solver page to verify access.', {
+                    solver_url: solver_url
+                });
+                await Page.navigate({ url: solver_url });
+                await Page.loadEventFired();
+                await Page.bringToFront();
+                last_reload_timestamp = Date.now();
+                await sleep(1000);
+                continue;
             }
 
-            await sleep(rand_int(400, 800));
+            await sleep(cloudflare_solver_poll_interval_ms);
         }
+
+        return {
+            solved: false
+        };
     } finally {
         try {
             await Target.closeTarget({ targetId: targetId });
@@ -348,7 +587,35 @@ export async function hook(cdp, request, response, hook_logger = null) {
     });
 
     try {
-        await solve_cloudflare_challenge(cdp, target_url, active_logger);
+        const solve_result = await solve_cloudflare_challenge(cdp, target_url, active_logger);
+        if (!solve_result || !solve_result.solved) {
+            active_logger.warn('Cloudflare solve did not reach a verified page state.', {
+                target_url: target_url
+            });
+            return;
+        }
+
+        const replayed_response = await replay_request_after_cloudflare(request, active_logger);
+        if (!replayed_response) {
+            active_logger.warn('Cloudflare solve succeeded but request replay could not be constructed.', {
+                target_url: target_url
+            });
+            return;
+        }
+
+        if (is_cloudflare_challenge_response(replayed_response)) {
+            active_logger.warn('Cloudflare solve succeeded in the browser but replay still returned a challenge response.', {
+                target_url: target_url,
+                status_code: replayed_response.statusCode
+            });
+            return;
+        }
+
+        overwrite_response(response, replayed_response);
+        active_logger.info('Replayed request after Cloudflare solve and replaced blocked response.', {
+            target_url: target_url,
+            status_code: replayed_response.statusCode
+        });
     } catch (err) {
         active_logger.warn('Failed to auto-solve Cloudflare challenge in after-request hook.', {
             message: err instanceof Error ? err.message : String(err),
