@@ -2,12 +2,48 @@ import { v4 as create_request_uuid } from 'uuid';
 import * as utils from './utils.js';
 import * as proxy from './proxy.js';
 import * as cdp from './cdp.js';
+import * as config from './config.js';
 import * as requestengine from './requestengine.js';
 import * as fetchgen from './fetchgen.js';
 import * as logger from './logger.js';
 import { start_health_monitor } from './healthcheck.js';
 
 const PROXY_AUTHENTICATION_ENABLED = Boolean(process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD);
+
+// Limits how many requests can use Chrome concurrently.
+// Without this, N concurrent requests all fight for Chrome's resources
+// and cause cascading timeouts under load.
+function create_semaphore(max_concurrency) {
+    let active = 0;
+    const queue = [];
+
+    async function acquire() {
+        if (active < max_concurrency) {
+            active += 1;
+            return;
+        }
+        return new Promise((resolve) => {
+            queue.push(resolve);
+        });
+    }
+
+    function release() {
+        if (queue.length > 0) {
+            const next = queue.shift();
+            next();
+        } else {
+            active -= 1;
+        }
+    }
+
+    function pending() {
+        return queue.length;
+    }
+
+    return { acquire, release, pending };
+}
+
+const chrome_semaphore = create_semaphore(config.MAX_CONCURRENT_REQUESTS);
 const DEBUG_TRACE_HEADER_NAME = 'X-Debug-Id';
 
 // Top-level error handling for unhandled promise rejections
@@ -91,6 +127,15 @@ process.on('uncaughtException', (err) => {
             let request_completed = false;
             let response_status_code = null;
             let request_error = null;
+
+            const queued_requests = chrome_semaphore.pending();
+            if (queued_requests > 0) {
+                request_logger.info('Waiting for Chrome availability.', {
+                    queued_ahead: queued_requests
+                });
+            }
+            await chrome_semaphore.acquire();
+
             try {
                 // We now check if there is an before-request hook defined.
                 if (process.env.BEFORE_REQUEST_HOOK_FILE_PATH) {
@@ -166,6 +211,7 @@ process.on('uncaughtException', (err) => {
                     lifecycle_summary.error = request_error;
                 }
                 request_logger.info('Completed proxy request lifecycle.', lifecycle_summary);
+                chrome_semaphore.release();
             }
         }
     );
