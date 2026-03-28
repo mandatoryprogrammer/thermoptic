@@ -1,0 +1,20 @@
+services:
+  chrome:
+    device_cgroup_rules:
+      - "c 226:* rmw"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - type: bind
+        source: /dev/dri
+        target: /dev/dri
+        bind:
+          create_host_path: true
+    environment:
+      CHROME_ENABLE_GPU: "true"
+      NVIDIA_DRIVER_CAPABILITIES: all
