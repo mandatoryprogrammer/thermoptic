@@ -12,6 +12,10 @@ CHROME_PROXY_BYPASS_LIST=${CHROME_PROXY_BYPASS_LIST:-"<-loopback>;thermoptic"}
 CHROME_PROXY_ENABLE_DNS=${CHROME_PROXY_ENABLE_DNS:-true}
 CHROME_PROXY_DNS_EXCLUSIONS=${CHROME_PROXY_DNS_EXCLUSIONS:-"localhost,thermoptic"}
 CHROME_ENABLE_GPU=${CHROME_ENABLE_GPU:-auto}
+CHROME_PROFILE_RECOVERY=${CHROME_PROFILE_RECOVERY:-true}
+CHROME_PROFILE_RECOVERY_EXIT_CODE=${CHROME_PROFILE_RECOVERY_EXIT_CODE:-133}
+CHROME_PROFILE_RECOVERY_MAX_RUNTIME_SECONDS=${CHROME_PROFILE_RECOVERY_MAX_RUNTIME_SECONDS:-20}
+CHROME_PROFILE_RECOVERY_BACKUP_ROOT=${CHROME_PROFILE_RECOVERY_BACKUP_ROOT:-/tmp/chrome-profile-recovery}
 
 export CHROME_CONTROL_PORT
 export CHROME_CONTROL_PID_FILE
@@ -24,6 +28,10 @@ export CHROME_PROXY_BYPASS_LIST
 export CHROME_PROXY_ENABLE_DNS
 export CHROME_PROXY_DNS_EXCLUSIONS
 export CHROME_ENABLE_GPU
+export CHROME_PROFILE_RECOVERY
+export CHROME_PROFILE_RECOVERY_EXIT_CODE
+export CHROME_PROFILE_RECOVERY_MAX_RUNTIME_SECONDS
+export CHROME_PROFILE_RECOVERY_BACKUP_ROOT
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/runtime-chromeuser}
 CHROME_PROFILE_DIR=${CHROME_PROFILE_DIR:-/home/chromeuser/profile}
 CHROME_SCREEN_WIDTH=${CHROME_SCREEN_WIDTH:-1920}
@@ -119,6 +127,32 @@ set_gpu_mode() {
   if [ "${gpu_request}" = "false" ]; then
     CHROME_GPU_MODE="software"
   fi
+}
+
+clear_stale_chrome_locks() {
+  rm -f "${CHROME_PROFILE_DIR}/SingletonLock" \
+        "${CHROME_PROFILE_DIR}/SingletonSocket" \
+        "${CHROME_PROFILE_DIR}/SingletonCookie"
+}
+
+recover_chrome_profile() {
+  local backup_root="$1"
+  local backup_dir=""
+  local backup_timestamp=""
+
+  mkdir -p "${CHROME_PROFILE_DIR}"
+  mkdir -p "${backup_root}"
+  backup_timestamp="$(date +%Y%m%d-%H%M%S 2>/dev/null || printf 'unknown')"
+  backup_dir="${backup_root}/${backup_timestamp}"
+  mkdir -p "${backup_dir}"
+
+  if ! find "${CHROME_PROFILE_DIR}" -mindepth 1 -maxdepth 1 -exec mv -t "${backup_dir}" -- {} + 2>/dev/null; then
+    echo "[WARN] Failed to move persisted Chrome profile data into ${backup_dir}. Clearing it in place."
+    find "${CHROME_PROFILE_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
+  fi
+
+  chmod 700 "${CHROME_PROFILE_DIR}" 2>/dev/null || true
+  echo "[WARN] Persisted Chrome profile moved to ${backup_dir}. Retrying with a clean profile."
 }
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -291,11 +325,6 @@ export LIBGL_ALWAYS_SOFTWARE
 mkdir -p "${XDG_RUNTIME_DIR}"
 mkdir -p "${CHROME_PROFILE_DIR}"
 
-# Clear stale singleton locks from previous runs so Chrome can start cleanly
-rm -f "${CHROME_PROFILE_DIR}/SingletonLock" \
-      "${CHROME_PROFILE_DIR}/SingletonSocket" \
-      "${CHROME_PROFILE_DIR}/SingletonCookie"
-
 # Clean up Xvfb lock if needed
 if [ -e /tmp/.X99-lock ]; then
   echo "Removing stale Xvfb lock..."
@@ -359,7 +388,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # Launch chrome with the debugging port
+profile_recovery_attempted=false
 while true; do
+  clear_stale_chrome_locks
+  chrome_launch_started_at="$(date +%s 2>/dev/null || printf '0')"
   set +e
   /usr/bin/google-chrome-stable \
     "${CHROME_COMMON_FLAGS[@]}" \
@@ -371,6 +403,21 @@ while true; do
   chrome_status=$?
   rm -f "${CHROME_CONTROL_PID_FILE}"
   set -e
+  chrome_runtime_seconds=0
+  if [ -n "${chrome_launch_started_at}" ]; then
+    chrome_runtime_seconds="$(( $(date +%s 2>/dev/null || printf '0') - chrome_launch_started_at ))"
+  fi
+
+  if [ "${CHROME_PROFILE_RECOVERY}" = "true" ] \
+    && [ "${profile_recovery_attempted}" != "true" ] \
+    && [ "${chrome_status}" -eq "${CHROME_PROFILE_RECOVERY_EXIT_CODE}" ] \
+    && [ "${chrome_runtime_seconds}" -le "${CHROME_PROFILE_RECOVERY_MAX_RUNTIME_SECONDS}" ]; then
+    echo "[WARN] Chrome exited with code ${chrome_status} after ${chrome_runtime_seconds}s. Resetting the persisted profile before retrying."
+    recover_chrome_profile "${CHROME_PROFILE_RECOVERY_BACKUP_ROOT}"
+    profile_recovery_attempted=true
+    sleep 1
+    continue
+  fi
 
   if [ "${chrome_status}" -eq 0 ]; then
     echo "[STATUS] Chrome exited cleanly. Restarting in 2 seconds..."
