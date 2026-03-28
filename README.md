@@ -46,12 +46,6 @@ Regular Docker setup (works on hosts without a GPU runtime):
 docker compose up --build
 ```
 
-NVIDIA GPU-enabled Docker setup:
-
-```
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
-```
-
 That's all, now you can proxy traffic through it:
 
 ```
@@ -62,7 +56,7 @@ Important notes:
 * By default the proxy runs without authentication. If you plan on exposing the proxy externally please make sure to set authentication with the environment variables `PROXY_USERNAME` and `PROXY_PASSWORD`.
 * If you don't want to use `---insecure` you need to use the generated CA file located in `./ssl/rootCA.crt`. This is generated the first time you run `thermoptic`.
 * You can connect `thermoptic` to any Chrome/Chromium instance launched with the `--remote-debugging-port` flag. This is essential as you'll want to set up and proxy through more commonly used environments to keep your fingerprint as low profile as possible (e.g. Chrome on Windows).
-* The GPU compose override is intended for NVIDIA hosts that already have Docker's NVIDIA runtime/toolkit installed. It reserves the GPU device, mounts `/dev/dri`, and lets the bundled Chrome container switch to the NVIDIA/Vulkan rendering path.
+* The GPU compose override is intended for NVIDIA hosts that already have Docker's NVIDIA runtime/toolkit installed. It reserves the GPU device, mounts `/dev/dri`, and lets the bundled Chrome container switch to the NVIDIA/Vulkan rendering path. To use this, run `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build`.
 
 ## Features
 
