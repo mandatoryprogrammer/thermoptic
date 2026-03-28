@@ -40,6 +40,8 @@ ge11cn19enus_f2808f0d04cf_9a10d4221160_7068f58def6e
 
 To start a `thermoptic` proxy which cloaks your traffic through a containerized Chrome instance on Ubuntu 22.04:
 
+Regular Docker setup (works on hosts without a GPU runtime):
+
 ```
 docker compose up --build
 ```
@@ -54,6 +56,7 @@ Important notes:
 * By default the proxy runs without authentication. If you plan on exposing the proxy externally please make sure to set authentication with the environment variables `PROXY_USERNAME` and `PROXY_PASSWORD`.
 * If you don't want to use `---insecure` you need to use the generated CA file located in `./ssl/rootCA.crt`. This is generated the first time you run `thermoptic`.
 * You can connect `thermoptic` to any Chrome/Chromium instance launched with the `--remote-debugging-port` flag. This is essential as you'll want to set up and proxy through more commonly used environments to keep your fingerprint as low profile as possible (e.g. Chrome on Windows).
+* The GPU compose override is intended for NVIDIA hosts that already have Docker's NVIDIA runtime/toolkit installed. It reserves the GPU device, mounts `/dev/dri`, and lets the bundled Chrome container switch to the NVIDIA/Vulkan rendering path. To use this, run `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build`.
 
 ## Features
 
@@ -206,6 +209,8 @@ These environment variables specify how `thermoptic` should be configured when i
 `ENABLE_GUI_CONTROL`: Set to `true` to launch the xpra web panel so you can drive the containerized Chrome by visiting `http://127.0.0.1:14111`. Disable it for headless-only runs.
 
 `CHROME_SCREEN_WIDTH` / `CHROME_SCREEN_HEIGHT`: The pixel dimensions of the dockerized headful Chrome display.
+
+`CHROME_ENABLE_GPU`: Controls whether the bundled Chrome container should try to use host GPU acceleration. `auto` (default) enables the NVIDIA/Vulkan path when the required runtime and device nodes are present, otherwise it falls back to software rendering. Set it to `false` to force the old software-only behavior.
 
 `PROXY_USERNAME`: The username which is used to authenticate you to the proxy, default is `changeme`. If unset then the proxy runs without requiring authentication.
 

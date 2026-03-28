@@ -11,6 +11,7 @@ CHROME_PROXY_SERVER=${CHROME_PROXY_SERVER:-http://proxyrouter:3128}
 CHROME_PROXY_BYPASS_LIST=${CHROME_PROXY_BYPASS_LIST:-"<-loopback>;thermoptic"}
 CHROME_PROXY_ENABLE_DNS=${CHROME_PROXY_ENABLE_DNS:-true}
 CHROME_PROXY_DNS_EXCLUSIONS=${CHROME_PROXY_DNS_EXCLUSIONS:-"localhost,thermoptic"}
+CHROME_ENABLE_GPU=${CHROME_ENABLE_GPU:-auto}
 
 export CHROME_CONTROL_PORT
 export CHROME_CONTROL_PID_FILE
@@ -22,16 +23,106 @@ export CHROME_PROXY_SERVER
 export CHROME_PROXY_BYPASS_LIST
 export CHROME_PROXY_ENABLE_DNS
 export CHROME_PROXY_DNS_EXCLUSIONS
+export CHROME_ENABLE_GPU
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/runtime-chromeuser}
 CHROME_PROFILE_DIR=${CHROME_PROFILE_DIR:-/home/chromeuser/profile}
 CHROME_SCREEN_WIDTH=${CHROME_SCREEN_WIDTH:-1920}
 CHROME_SCREEN_HEIGHT=${CHROME_SCREEN_HEIGHT:-1080}
-LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
+LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-}
 CHROME_BOOTSTRAP_USER=${CHROME_BOOTSTRAP_USER:-chromeuser}
 CHROME_BOOTSTRAP_UID=${CHROME_BOOTSTRAP_UID:-1001}
 CHROME_BOOTSTRAP_GID=${CHROME_BOOTSTRAP_GID:-1001}
+CHROME_GPU_MODE="software"
+CHROME_EGL_NVIDIA_VENDOR_FILE=${XDG_RUNTIME_DIR}/nvidia-egl.json
+CHROME_VULKAN_NVIDIA_ICD_FILE=${XDG_RUNTIME_DIR}/nvidia-vulkan.json
+
+ensure_device_group_access() {
+  local bootstrap_user="$1"
+  local device_path=""
+  local device_gid=""
+  local group_name=""
+
+  if ! command -v stat >/dev/null 2>&1 || ! command -v usermod >/dev/null 2>&1; then
+    return 0
+  fi
+
+  for device_path in /dev/dri/card0 /dev/dri/renderD128; do
+    if [ ! -e "${device_path}" ]; then
+      continue
+    fi
+
+    device_gid="$(stat -c '%g' "${device_path}" 2>/dev/null || true)"
+    if [ -z "${device_gid}" ]; then
+      continue
+    fi
+
+    group_name="$(getent group "${device_gid}" | cut -d: -f1)"
+    if [ -z "${group_name}" ]; then
+      group_name="hostgpu${device_gid}"
+      if ! groupadd -g "${device_gid}" "${group_name}" >/dev/null 2>&1; then
+        group_name="$(getent group "${device_gid}" | cut -d: -f1)"
+      fi
+    fi
+
+    if [ -n "${group_name}" ]; then
+      usermod -aG "${group_name}" "${bootstrap_user}" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+configure_nvidia_vendor_files() {
+  mkdir -p "$(dirname "${CHROME_EGL_NVIDIA_VENDOR_FILE}")" "$(dirname "${CHROME_VULKAN_NVIDIA_ICD_FILE}")"
+  cat > "${CHROME_EGL_NVIDIA_VENDOR_FILE}" <<'EOF'
+{
+  "file_format_version": "1.0.0",
+  "ICD": {
+    "library_path": "libEGL_nvidia.so.0"
+  }
+}
+EOF
+  cat > "${CHROME_VULKAN_NVIDIA_ICD_FILE}" <<'EOF'
+{
+  "file_format_version": "1.0.1",
+  "ICD": {
+    "library_path": "libGLX_nvidia.so.0",
+    "api_version": "1.4.312"
+  }
+}
+EOF
+}
+
+set_gpu_mode() {
+  local gpu_request="$1"
+  local nvidia_stack_ready=false
+  local render_node_ready=false
+
+  if [ -e /dev/dri/renderD128 ]; then
+    render_node_ready=true
+  fi
+
+  if [ "${render_node_ready}" = "true" ] \
+    && [ -e /dev/nvidiactl ] \
+    && [ -e /usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.0 ] \
+    && [ -e /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0 ]; then
+    nvidia_stack_ready=true
+  fi
+
+  CHROME_GPU_MODE="software"
+  if [ "${gpu_request}" = "true" ] || [ "${gpu_request}" = "auto" ]; then
+    if [ "${nvidia_stack_ready}" = "true" ]; then
+      CHROME_GPU_MODE="nvidia_vulkan"
+    elif [ "${gpu_request}" = "true" ] && [ "${render_node_ready}" = "true" ]; then
+      CHROME_GPU_MODE="generic"
+    fi
+  fi
+
+  if [ "${gpu_request}" = "false" ]; then
+    CHROME_GPU_MODE="software"
+  fi
+}
 
 if [ "$(id -u)" -eq 0 ]; then
+  ensure_device_group_access "${CHROME_BOOTSTRAP_USER}"
   mkdir -p "${XDG_RUNTIME_DIR}" "${CHROME_PROFILE_DIR}"
   if ! chown -R "${CHROME_BOOTSTRAP_UID}:${CHROME_BOOTSTRAP_GID}" "${XDG_RUNTIME_DIR}" "${CHROME_PROFILE_DIR}" 2>/dev/null; then
     echo "[WARN] Unable to set ownership on Chrome runtime/profile directories. Continuing."
@@ -86,20 +177,10 @@ CHROME_COMMON_FLAGS=(
   "--window-size=${CHROME_SCREEN_WIDTH},${CHROME_SCREEN_HEIGHT}"
   --start-maximized
   --force-device-scale-factor=1
-  --disable-gpu
-  --disable-accelerated-2d-canvas
-  --disable-accelerated-video-decode
-  --disable-accelerated-mjpeg-decode
-  --disable-3d-apis
-  --disable-webrtc-hw-encoding
-  --disable-webrtc-hw-decoding
-  --disable-gpu-compositing
-  --disable-gpu-rasterization
   --disable-dev-shm-usage
   --disable-background-networking
   --disable-renderer-backgrounding
   --noerrdialogs
-  --use-gl=swiftshader
   --disable-breakpad
   --disable-crash-reporter
   "--proxy-server=${CHROME_PROXY_SERVER}"
@@ -159,6 +240,48 @@ if [ "${CHROME_PROXY_ENABLE_DNS}" = "true" ]; then
     done
     CHROME_COMMON_FLAGS+=("--host-resolver-rules=${resolver_rule}")
 fi
+
+set_gpu_mode "${CHROME_ENABLE_GPU}"
+if [ "${CHROME_GPU_MODE}" = "nvidia_vulkan" ]; then
+  configure_nvidia_vendor_files
+  export __EGL_VENDOR_LIBRARY_FILENAMES="${CHROME_EGL_NVIDIA_VENDOR_FILE}"
+  export VK_ICD_FILENAMES="${CHROME_VULKAN_NVIDIA_ICD_FILE}"
+  LIBGL_ALWAYS_SOFTWARE=0
+  CHROME_COMMON_FLAGS+=(
+    --ignore-gpu-blocklist
+    --enable-gpu
+    --use-gl=angle
+    --use-angle=vulkan
+    --use-cmd-decoder=passthrough
+  )
+  echo "[STATUS] GPU mode enabled: NVIDIA Vulkan."
+elif [ "${CHROME_GPU_MODE}" = "generic" ]; then
+  LIBGL_ALWAYS_SOFTWARE=0
+  CHROME_COMMON_FLAGS+=(
+    --ignore-gpu-blocklist
+    --enable-gpu
+    --use-gl=angle
+    --use-angle=gl
+    --use-cmd-decoder=passthrough
+  )
+  echo "[STATUS] GPU mode enabled: generic DRM/ANGLE."
+else
+  LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
+  CHROME_COMMON_FLAGS+=(
+    --disable-gpu
+    --disable-accelerated-2d-canvas
+    --disable-accelerated-video-decode
+    --disable-accelerated-mjpeg-decode
+    --disable-3d-apis
+    --disable-webrtc-hw-encoding
+    --disable-webrtc-hw-decoding
+    --disable-gpu-compositing
+    --disable-gpu-rasterization
+    --use-gl=swiftshader
+  )
+  echo "[STATUS] GPU mode disabled. Falling back to software rendering."
+fi
+
 export XDG_RUNTIME_DIR
 export CHROME_PROFILE_DIR
 export CHROME_SCREEN_WIDTH
