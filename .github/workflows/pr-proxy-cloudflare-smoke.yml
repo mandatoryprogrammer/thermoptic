@@ -21,7 +21,7 @@ concurrency:
 jobs:
   smoke-test:
     name: Proxy + Cloudflare Smoke Test
-    if: ${{ !github.event.pull_request.draft }}
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.user.login == 'mandatoryprogrammer' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
 
