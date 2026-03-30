@@ -212,6 +212,8 @@ These environment variables specify how `thermoptic` should be configured when i
 
 `CHROME_ENABLE_GPU`: Controls whether the bundled Chrome container should try to use host GPU acceleration. `auto` (default) enables the NVIDIA/Vulkan path when the required runtime and device nodes are present, otherwise it falls back to software rendering. Set it to `false` to force the old software-only behavior.
 
+`CHROME_PROFILE_RECOVERY`: When `true` (default), the bundled Chrome launcher will make one recovery attempt if Chrome immediately dies with the same crash-loop exit code observed in a poisoned profile (`133`). The bad profile contents are moved under `/tmp/chrome-profile-recovery/` inside the container before retrying with a clean profile.
+
 `PROXY_USERNAME`: The username which is used to authenticate you to the proxy, default is `changeme`. If unset then the proxy runs without requiring authentication.
 
 `PROXY_PASSWORD`: The password which is used to authenticate you to the proxy, default is `changeme`. If unset then the proxy runs without requiring authentication.
