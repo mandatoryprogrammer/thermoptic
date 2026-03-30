@@ -1056,7 +1056,7 @@ async function _fetch_request(url, protocol, method, path, headers, body, active
                 const tab = new_tab_info.tab;
 
                 let is_options_preflight = false;
-                if (method === 'options') {
+                if (typeof method === 'string' && method.toLowerCase() === 'options') {
                     is_options_preflight = true;
                 }
 
