@@ -1,0 +1,11 @@
+services:
+  chrome:
+    environment:
+      ENABLE_GUI_CONTROL: "false"
+      CHROME_ENABLE_GPU: "false"
+  thermoptic:
+    environment:
+      AFTER_REQUEST_HOOK_FILE_PATH: /work/hooks/afterrequest.js
+      CDP_STARTUP_TIMEOUT_MS: 180000
+      DEBUG: "true"
+      TRACE: "false"
