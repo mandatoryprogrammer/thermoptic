@@ -5,7 +5,8 @@
   "main": "main.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Use npm run test:ci:proxy-cloudflare for the end-to-end smoke test.\"",
+    "test:ci:proxy-cloudflare": "node scripts/ci-proxy-cloudflare.test.js"
   },
   "author": "mandatory",
   "license": "ISC",

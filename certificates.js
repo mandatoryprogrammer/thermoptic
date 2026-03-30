@@ -2,9 +2,10 @@ import { access, mkdir, writeFile } from 'fs/promises';
 import { constants as fs_constants } from 'fs';
 import { resolve } from 'path';
 
-const CA_DIRECTORY_PATH = resolve('./ssl');
-const CA_CERTIFICATE_PATH = resolve('./ssl/rootCA.crt');
-const CA_PRIVATE_KEY_PATH = resolve('./ssl/rootCA.key');
+const configured_ca_directory = process.env.THERMOPTIC_CA_DIR || './ssl';
+const CA_DIRECTORY_PATH = resolve(configured_ca_directory);
+const CA_CERTIFICATE_PATH = resolve(CA_DIRECTORY_PATH, 'rootCA.crt');
+const CA_PRIVATE_KEY_PATH = resolve(CA_DIRECTORY_PATH, 'rootCA.key');
 
 export { CA_DIRECTORY_PATH, CA_CERTIFICATE_PATH, CA_PRIVATE_KEY_PATH };
 

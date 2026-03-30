@@ -218,6 +218,8 @@ These environment variables specify how `thermoptic` should be configured when i
 
 `PROXY_PASSWORD`: The password which is used to authenticate you to the proxy, default is `changeme`. If unset then the proxy runs without requiring authentication.
 
+`THERMOPTIC_CA_DIR`: Optional override for where thermoptic stores its generated root CA material. This is useful for CI or other environments where the repository's default `./ssl` path should remain untouched.
+
 `THERMOPTIC_CONTAINER_RUNTIME`: Signals that thermoptic is running inside the bundled container. Leave this set to `true`; it gates behaviors like the built-in health checks that only make sense in the full Docker setup.
 
 `HEALTHCHECK_ENDPOINT_PORT`: The port where thermoptic exposes its health-check web endpoint. The health worker calls this through the proxy; if it stops responding, Chrome is automatically restarted to unstick frozen sessions.
