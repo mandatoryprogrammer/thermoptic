@@ -1,7 +1,5 @@
-import http from 'node:http';
-import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,12 +8,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repo_root = resolve(__dirname, '..');
 
 const cloudflare_test_url = process.env.CLOUDFLARE_TEST_URL || 'https://cloudflare.thehackerblog.com/';
-const chrome_host = process.env.CHROME_DEBUGGING_HOST || '127.0.0.1';
-const chrome_debugging_port = parse_integer_env(process.env.CHROME_DEBUGGING_PORT, 9222);
+const standard_proxy_test_url = process.env.STANDARD_PROXY_TEST_URL || 'https://example.com/';
 const http_proxy_port = parse_integer_env(process.env.HTTP_PROXY_PORT || process.env.THERMOPTIC_PROXY_PORT, 1234);
-const xvfb_display = process.env.THERMOPTIC_TEST_DISPLAY || ':99';
-const cdp_startup_timeout_ms = parse_integer_env(process.env.CDP_STARTUP_TIMEOUT_MS, 30000);
 const curl_timeout_seconds = parse_integer_env(process.env.THERMOPTIC_TEST_CURL_TIMEOUT_SECONDS, 120);
+const project_suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const compose_project_name = sanitize_project_name(`thermoptic-ci-${project_suffix}`);
+
+const compose_files = [
+    join(repo_root, 'docker-compose.yml'),
+    join(repo_root, 'docker-compose.ci.yml')
+];
 
 const direct_challenge_markers = [
     'Verify you are human by completing the action below.',
@@ -51,6 +53,10 @@ function parse_integer_env(raw_value, fallback_value) {
     return fallback_value;
 }
 
+function sanitize_project_name(project_name) {
+    return project_name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+}
+
 function log_status(message, context = null) {
     if (context && Object.keys(context).length > 0) {
         console.log(`[STATUS] ${message}`, JSON.stringify(context));
@@ -64,7 +70,7 @@ function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function summarize_text(text, max_length = 1600) {
+function summarize_text(text, max_length = 2000) {
     if (!text) {
         return '';
     }
@@ -139,192 +145,19 @@ function contains_any_marker(text, markers) {
     return markers.some((marker) => text.includes(marker));
 }
 
-function create_process_capture(process_name) {
+function get_compose_env() {
     return {
-        process_name: process_name,
-        full_output: '',
-        append(chunk) {
-            const text_chunk = chunk ? chunk.toString('utf8') : '';
-            this.full_output += text_chunk;
-            if (this.full_output.length > 240000) {
-                this.full_output = this.full_output.slice(this.full_output.length - 240000);
-            }
-        },
-        includes(pattern) {
-            return this.full_output.includes(pattern);
-        },
-        tail() {
-            return summarize_text(this.full_output, 8000);
-        }
+        ...process.env,
+        COMPOSE_PROJECT_NAME: compose_project_name
     };
 }
 
-function start_managed_process(process_name, command, args, options = {}) {
-    const capture = create_process_capture(process_name);
-    const child = spawn(command, args, {
-        cwd: options.cwd || repo_root,
-        env: {
-            ...process.env,
-            ...(options.env || {})
-        },
-        stdio: ['ignore', 'pipe', 'pipe']
-    });
-
-    child.stdout.on('data', (chunk) => capture.append(chunk));
-    child.stderr.on('data', (chunk) => capture.append(chunk));
-
-    const exit_promise = new Promise((resolve_exit) => {
-        child.once('exit', (code, signal) => {
-            resolve_exit({
-                code: code,
-                signal: signal
-            });
-        });
-    });
-
-    return {
-        name: process_name,
-        child: child,
-        capture: capture,
-        exit_promise: exit_promise,
-        async stop() {
-            if (child.exitCode !== null || child.signalCode !== null) {
-                return;
-            }
-
-            child.kill('SIGTERM');
-
-            const exit_result = await Promise.race([
-                exit_promise,
-                sleep(10000).then(() => null)
-            ]);
-
-            if (!exit_result) {
-                child.kill('SIGKILL');
-                await exit_promise;
-            }
-        }
-    };
-}
-
-async function wait_for_port(host, port, timeout_ms) {
-    const deadline = Date.now() + timeout_ms;
-
-    while (Date.now() < deadline) {
-        const port_is_open = await new Promise((resolve) => {
-            const socket = net.createConnection({
-                host: host,
-                port: port
-            });
-
-            socket.once('connect', () => {
-                socket.destroy();
-                resolve(true);
-            });
-
-            socket.once('error', () => {
-                socket.destroy();
-                resolve(false);
-            });
-
-            socket.setTimeout(1000, () => {
-                socket.destroy();
-                resolve(false);
-            });
-        });
-
-        if (port_is_open) {
-            return;
-        }
-
-        await sleep(250);
+function get_compose_args(args = []) {
+    const file_args = [];
+    for (const compose_file of compose_files) {
+        file_args.push('-f', compose_file);
     }
-
-    throw new Error(`Timed out waiting for ${host}:${port} to accept connections.`);
-}
-
-async function wait_for_cdp(host, port, timeout_ms) {
-    const deadline = Date.now() + timeout_ms;
-
-    while (Date.now() < deadline) {
-        const cdp_is_ready = await new Promise((resolve) => {
-            const request = http.get(
-                {
-                    host: host,
-                    port: port,
-                    path: '/json/version',
-                    timeout: 1500,
-                    headers: {
-                        host: '127.0.0.1'
-                    }
-                },
-                (response) => {
-                    let response_body = '';
-                    response.setEncoding('utf8');
-                    response.on('data', (chunk) => {
-                        response_body += chunk || '';
-                    });
-                    response.on('end', () => {
-                        if (response.statusCode !== 200) {
-                            resolve(false);
-                            return;
-                        }
-
-                        try {
-                            const payload = JSON.parse(response_body || '{}');
-                            resolve(Boolean(payload.Browser || payload.webSocketDebuggerUrl));
-                        } catch {
-                            resolve(false);
-                        }
-                    });
-                }
-            );
-
-            request.on('timeout', () => {
-                request.destroy(new Error('timeout'));
-                resolve(false);
-            });
-
-            request.on('error', () => {
-                resolve(false);
-            });
-        });
-
-        if (cdp_is_ready) {
-            return;
-        }
-
-        await sleep(250);
-    }
-
-    throw new Error(`Timed out waiting for CDP on ${host}:${port}.`);
-}
-
-async function wait_for_log_marker(process_handle, log_marker, timeout_ms) {
-    const deadline = Date.now() + timeout_ms;
-
-    while (Date.now() < deadline) {
-        if (process_handle.capture.includes(log_marker)) {
-            return;
-        }
-
-        const exit_result = await Promise.race([
-            process_handle.exit_promise,
-            sleep(250).then(() => null)
-        ]);
-
-        if (exit_result) {
-            throw new Error(
-                `${process_handle.name} exited before emitting the required log marker "${log_marker}".\n` +
-                `${process_handle.name} log tail:\n${process_handle.capture.tail()}`
-            );
-        }
-    }
-
-    throw new Error(
-        `Timed out waiting for ${process_handle.name} to emit "${log_marker}".\n` +
-        `${process_handle.name} log tail:\n${process_handle.capture.tail()}`
-    );
+    return ['compose', ...file_args, ...args];
 }
 
 async function run_command(command, args, options = {}) {
@@ -332,8 +165,7 @@ async function run_command(command, args, options = {}) {
         const child = spawn(command, args, {
             cwd: options.cwd || repo_root,
             env: {
-                ...process.env,
-                ...(options.env || {})
+                ...(options.env || process.env)
             },
             stdio: ['ignore', 'pipe', 'pipe']
         });
@@ -364,41 +196,23 @@ async function run_command(command, args, options = {}) {
     });
 }
 
-async function start_local_probe_server() {
-    const server = http.createServer((request, response) => {
-        if (request.url !== '/proxy-health') {
-            response.writeHead(404, {
-                'Content-Type': 'text/plain'
-            });
-            response.end('not found');
-            return;
-        }
-
-        response.writeHead(200, {
-            'Content-Type': 'text/plain'
-        });
-        response.end('thermoptic proxy ok');
+async function docker_compose(args, options = {}) {
+    return run_command('docker', get_compose_args(args), {
+        cwd: options.cwd || repo_root,
+        env: options.env || get_compose_env()
     });
+}
 
-    await new Promise((resolve_listen, reject_listen) => {
-        server.once('error', reject_listen);
-        server.listen(0, '127.0.0.1', resolve_listen);
-    });
-
-    const address = server.address();
-    if (!address || typeof address === 'string') {
-        throw new Error('Failed to determine local probe server address.');
+function assert_command_succeeded(command_result, description) {
+    if (command_result.code === 0) {
+        return;
     }
 
-    return {
-        server: server,
-        port: address.port,
-        async close() {
-            await new Promise((resolve_close) => {
-                server.close(resolve_close);
-            });
-        }
-    };
+    throw new Error(
+        `${description} failed with exit code ${command_result.code}.\n` +
+        `stdout:\n${summarize_text(command_result.stdout, 5000)}\n\n` +
+        `stderr:\n${summarize_text(command_result.stderr, 5000)}`
+    );
 }
 
 async function fetch_via_curl(artifacts_dir, name, url, options = {}) {
@@ -425,7 +239,7 @@ async function fetch_via_curl(artifacts_dir, name, url, options = {}) {
     args.push(url);
 
     const command_result = await run_command('curl', args, {
-        env: options.env
+        env: options.env || process.env
     });
 
     const headers_text = await readFile(headers_path, 'utf8').catch(() => '');
@@ -436,21 +250,91 @@ async function fetch_via_curl(artifacts_dir, name, url, options = {}) {
         command_result: command_result,
         headers_text: headers_text,
         body_text: body_text,
-        parsed_headers: parsed_headers,
-        headers_path: headers_path,
-        body_path: body_path
+        parsed_headers: parsed_headers
     };
 }
 
-function assert_command_succeeded(command_result, description) {
-    if (command_result.code === 0) {
-        return;
+async function ensure_runtime_tools_exist() {
+    const checks = await Promise.all([
+        run_command('bash', ['-lc', 'command -v docker']),
+        run_command('bash', ['-lc', 'docker compose version']),
+        run_command('bash', ['-lc', 'command -v curl'])
+    ]);
+
+    for (const result of checks) {
+        assert_command_succeeded(result, 'Runtime dependency check');
+    }
+}
+
+async function get_compose_logs(service_name) {
+    const logs_result = await docker_compose(['logs', '--no-color', '--timestamps', service_name]);
+    assert_command_succeeded(logs_result, `docker compose logs ${service_name}`);
+    return `${logs_result.stdout || ''}${logs_result.stderr || ''}`;
+}
+
+async function wait_for_service_log_marker(service_name, log_marker, timeout_ms) {
+    const deadline = Date.now() + timeout_ms;
+
+    while (Date.now() < deadline) {
+        const logs_text = await get_compose_logs(service_name);
+        if (logs_text.includes(log_marker)) {
+            return logs_text;
+        }
+
+        await sleep(1000);
     }
 
+    const logs_text = await get_compose_logs(service_name);
     throw new Error(
-        `${description} failed with exit code ${command_result.code}.\n` +
-        `stderr:\n${summarize_text(command_result.stderr, 4000)}`
+        `Timed out waiting for ${service_name} to emit "${log_marker}".\n` +
+        `${service_name} log tail:\n${summarize_text(logs_text, 8000)}`
     );
+}
+
+async function wait_for_proxy_port(proxy_url, timeout_ms) {
+    const deadline = Date.now() + timeout_ms;
+
+    while (Date.now() < deadline) {
+        const probe_result = await run_command('curl', [
+            '-sS',
+            '-k',
+            '--proxy',
+            proxy_url,
+            '--max-time',
+            '20',
+            '-o',
+            '/dev/null',
+            standard_proxy_test_url
+        ]).catch(() => null);
+
+        if (probe_result && probe_result.code === 0) {
+            return;
+        }
+
+        await sleep(1000);
+    }
+
+    throw new Error(`Timed out waiting for thermoptic to answer on ${proxy_url}.`);
+}
+
+function assert_standard_proxy_response(fetch_result) {
+    assert_command_succeeded(fetch_result.command_result, 'Standard proxy request');
+
+    const status_code = fetch_result.parsed_headers.status_code;
+    if (status_code !== 200) {
+        throw new Error(
+            `Expected standard proxy request to return 200, received ${status_code}.\n` +
+            `Headers:\n${fetch_result.headers_text}\n\n` +
+            `Body excerpt:\n${summarize_text(fetch_result.body_text, 2000)}`
+        );
+    }
+
+    if (!fetch_result.body_text.includes('Example Domain')) {
+        throw new Error(
+            'Expected the standard proxy request body to contain "Example Domain".\n' +
+            `Body excerpt:\n${summarize_text(fetch_result.body_text, 2000)}`
+        );
+    }
 }
 
 function assert_direct_challenge_response(fetch_result) {
@@ -475,16 +359,6 @@ function assert_direct_challenge_response(fetch_result) {
     if (headers['cf-mitigated'] !== 'challenge') {
         throw new Error(
             `Expected baseline response to include "cf-mitigated: challenge", got "${headers['cf-mitigated'] || ''}".`
-        );
-    }
-}
-
-function assert_basic_proxy_response(fetch_result) {
-    assert_command_succeeded(fetch_result.command_result, 'Basic proxy probe request');
-
-    if (fetch_result.body_text.trim() !== 'thermoptic proxy ok') {
-        throw new Error(
-            `Unexpected body from local proxy probe:\n${summarize_text(fetch_result.body_text, 1000)}`
         );
     }
 }
@@ -519,69 +393,49 @@ function assert_solved_cloudflare_response(fetch_result) {
             `Body excerpt:\n${summarize_text(fetch_result.body_text, 3000)}`
         );
     }
-
 }
 
-function assert_solver_logs(proxy_process, direct_response_requires_click) {
+function assert_solver_logs(logs_text, direct_response_requires_click) {
     for (const required_marker of required_solver_log_markers) {
-        if (!proxy_process.capture.includes(required_marker)) {
+        if (!logs_text.includes(required_marker)) {
             throw new Error(
-                `Expected proxy log to include "${required_marker}".\n` +
-                `Proxy log tail:\n${proxy_process.capture.tail()}`
+                `Expected thermoptic log to include "${required_marker}".\n` +
+                `Log tail:\n${summarize_text(logs_text, 10000)}`
             );
         }
     }
 
-    if (direct_response_requires_click && !proxy_process.capture.includes(click_solver_log_marker)) {
+    if (direct_response_requires_click && !logs_text.includes(click_solver_log_marker)) {
         throw new Error(
-            `Expected proxy log to include "${click_solver_log_marker}" for the interactive challenge path.\n` +
-            `Proxy log tail:\n${proxy_process.capture.tail()}`
+            `Expected thermoptic log to include "${click_solver_log_marker}" for the interactive challenge path.\n` +
+            `Log tail:\n${summarize_text(logs_text, 10000)}`
         );
     }
 }
 
-async function ensure_runtime_tools_exist() {
-    const checks = [
-        run_command('bash', ['-lc', 'command -v curl']),
-        run_command('bash', ['-lc', 'command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser'])
-    ];
-
-    if (!process.env.DISPLAY) {
-        checks.push(run_command('bash', ['-lc', 'command -v Xvfb']));
-    }
-
-    const results = await Promise.all(checks);
-    for (const result of results) {
-        assert_command_succeeded(result, 'Runtime dependency check');
+async function print_service_logs(service_name) {
+    try {
+        const logs_text = await get_compose_logs(service_name);
+        console.error(`[${service_name} logs]`);
+        console.error(summarize_text(logs_text, 12000));
+    } catch (err) {
+        console.error(`[WARN] Failed to collect logs for ${service_name}: ${err instanceof Error ? err.message : String(err)}`);
     }
 }
 
 async function main() {
     const temp_root = await mkdtemp(join(tmpdir(), 'thermoptic-ci-'));
-    const temp_paths = {
-        temp_root: temp_root,
-        ca_dir: join(temp_root, 'ca'),
-        artifacts_dir: join(temp_root, 'artifacts'),
-        chrome_profile_dir: join(temp_root, 'chrome-profile'),
-        xdg_runtime_dir: join(temp_root, 'xdg-runtime')
-    };
-
-    const managed_resources = [];
-    let local_probe_server = null;
+    const proxy_url = `http://127.0.0.1:${http_proxy_port}`;
+    let stack_started = false;
 
     try {
         await ensure_runtime_tools_exist();
-        await mkdir(temp_paths.ca_dir, { recursive: true });
-        await mkdir(temp_paths.artifacts_dir, { recursive: true });
-        await mkdir(temp_paths.chrome_profile_dir, { recursive: true });
-        await mkdir(temp_paths.xdg_runtime_dir, { recursive: true });
 
         log_status('Verifying that the Cloudflare test site still serves a challenge to plain curl.', {
             url: cloudflare_test_url
         });
-
         const direct_cloudflare_response = await fetch_via_curl(
-            temp_paths.artifacts_dir,
+            temp_root,
             'direct-cloudflare',
             cloudflare_test_url
         );
@@ -592,112 +446,40 @@ async function main() {
             interactive_challenge_markers
         );
 
-        log_status('Starting display server for headful Chrome.', {
-            display: process.env.DISPLAY || xvfb_display
+        log_status('Building the docker compose stack for the CI smoke test.', {
+            project: compose_project_name
         });
+        const build_result = await docker_compose(['build']);
+        assert_command_succeeded(build_result, 'docker compose build');
 
-        if (!process.env.DISPLAY) {
-            const xvfb_process = start_managed_process(
-                'Xvfb',
-                'Xvfb',
-                [xvfb_display, '-screen', '0', '1920x1080x24', '-ac'],
-                {
-                    env: {
-                        DISPLAY: xvfb_display
-                    }
-                }
-            );
-            managed_resources.push(xvfb_process);
-            await sleep(1000);
-        }
+        log_status('Starting the docker compose stack.');
+        const up_result = await docker_compose(['up', '-d']);
+        assert_command_succeeded(up_result, 'docker compose up -d');
+        stack_started = true;
 
-        const display_value = process.env.DISPLAY || xvfb_display;
-        const chrome_command_result = await run_command('bash', [
-            '-lc',
-            'command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser'
-        ]);
-        assert_command_succeeded(chrome_command_result, 'Chrome binary lookup');
-        const chrome_command = chrome_command_result.stdout.trim().split(/\r?\n/).filter(Boolean)[0];
+        await wait_for_service_log_marker('thermoptic', proxy_ready_log_marker, 120000);
+        await wait_for_proxy_port(proxy_url, 120000);
 
-        log_status('Launching Chrome for the CI smoke test.', {
-            command: chrome_command,
-            host: chrome_host,
-            port: chrome_debugging_port
+        log_status('Running a standard proxied request through the dockerized thermoptic instance.', {
+            url: standard_proxy_test_url
         });
-
-        const chrome_process = start_managed_process(
-            'Chrome',
-            chrome_command,
-            [
-                `--remote-debugging-port=${chrome_debugging_port}`,
-                '--remote-debugging-address=127.0.0.1',
-                `--user-data-dir=${temp_paths.chrome_profile_dir}`,
-                '--no-first-run',
-                '--no-default-browser-check',
-                '--disable-dev-shm-usage',
-                '--disable-background-networking',
-                '--disable-renderer-backgrounding',
-                '--window-position=0,0',
-                '--window-size=1920,1080',
-                '--force-device-scale-factor=1',
-                'about:blank'
-            ],
-            {
-                env: {
-                    DISPLAY: display_value,
-                    XDG_RUNTIME_DIR: temp_paths.xdg_runtime_dir
-                }
-            }
-        );
-        managed_resources.push(chrome_process);
-
-        await wait_for_cdp(chrome_host, chrome_debugging_port, cdp_startup_timeout_ms);
-
-        log_status('Starting thermoptic with the Cloudflare after-request solver hook.');
-        const proxy_process = start_managed_process(
-            'thermoptic',
-            process.execPath,
-            [join(repo_root, 'server.js')],
-            {
-                env: {
-                    CHROME_DEBUGGING_HOST: chrome_host,
-                    CHROME_DEBUGGING_PORT: String(chrome_debugging_port),
-                    HTTP_PROXY_PORT: String(http_proxy_port),
-                    AFTER_REQUEST_HOOK_FILE_PATH: join(repo_root, 'hooks/afterrequest.js'),
-                    THERMOPTIC_CA_DIR: temp_paths.ca_dir,
-                    DEBUG: 'true'
-                }
-            }
-        );
-        managed_resources.push(proxy_process);
-
-        await wait_for_log_marker(proxy_process, proxy_ready_log_marker, 30000);
-        await wait_for_port('127.0.0.1', http_proxy_port, 10000);
-
-        local_probe_server = await start_local_probe_server();
-
-        log_status('Running a deterministic local proxy probe before the external Cloudflare solve test.', {
-            port: local_probe_server.port
-        });
-
-        const proxy_url = `http://127.0.0.1:${http_proxy_port}`;
-        const local_probe_result = await fetch_via_curl(
-            temp_paths.artifacts_dir,
-            'local-proxy-probe',
-            `http://127.0.0.1:${local_probe_server.port}/proxy-health`,
+        const standard_proxy_response = await fetch_via_curl(
+            temp_root,
+            'standard-proxy',
+            standard_proxy_test_url,
             {
                 proxy_url: proxy_url,
-                max_time_seconds: 30
+                insecure: true,
+                max_time_seconds: 60
             }
         );
-        assert_basic_proxy_response(local_probe_result);
+        assert_standard_proxy_response(standard_proxy_response);
 
-        log_status('Running the proxied Cloudflare challenge solve and replay test.', {
+        log_status('Running the proxied Cloudflare challenge solve against the docker compose stack.', {
             url: cloudflare_test_url
         });
-
         const proxied_cloudflare_result = await fetch_via_curl(
-            temp_paths.artifacts_dir,
+            temp_root,
             'proxied-cloudflare',
             cloudflare_test_url,
             {
@@ -708,11 +490,9 @@ async function main() {
         );
         assert_solved_cloudflare_response(proxied_cloudflare_result);
 
-        assert_solver_logs(proxy_process, direct_response_requires_click);
-
         log_status('Replaying the Cloudflare request a second time to confirm the cleared session still works.');
         const replay_result = await fetch_via_curl(
-            temp_paths.artifacts_dir,
+            temp_root,
             'proxied-cloudflare-replay',
             cloudflare_test_url,
             {
@@ -723,18 +503,37 @@ async function main() {
         );
         assert_solved_cloudflare_response(replay_result);
 
-        log_status('Proxy smoke test and Cloudflare solver validation completed successfully.', {
+        const thermoptic_logs = await get_compose_logs('thermoptic');
+        assert_solver_logs(thermoptic_logs, direct_response_requires_click);
+
+        log_status('Docker compose build and runtime smoke test completed successfully.', {
+            standard_status_code: standard_proxy_response.parsed_headers.status_code,
             final_status_code: proxied_cloudflare_result.parsed_headers.status_code,
             replay_status_code: replay_result.parsed_headers.status_code,
             challenge_required_click: direct_response_requires_click
         });
-    } finally {
-        if (local_probe_server) {
-            await local_probe_server.close().catch(() => {});
+    } catch (err) {
+        if (stack_started) {
+            await print_service_logs('thermoptic');
+            await print_service_logs('chrome');
+            await print_service_logs('proxyrouter');
         }
 
-        for (let i = managed_resources.length - 1; i >= 0; i -= 1) {
-            await managed_resources[i].stop().catch(() => {});
+        console.error('[ERROR] Docker compose proxy/Cloudflare smoke test failed.');
+        console.error(err instanceof Error ? err.stack || err.message : String(err));
+        process.exitCode = 1;
+    } finally {
+        if (stack_started) {
+            const down_result = await docker_compose(['down', '-v', '--remove-orphans']).catch((err) => ({
+                code: 1,
+                stdout: '',
+                stderr: err instanceof Error ? err.message : String(err)
+            }));
+
+            if (down_result.code !== 0) {
+                console.error('[WARN] docker compose down failed.');
+                console.error(summarize_text(`${down_result.stdout || ''}\n${down_result.stderr || ''}`, 4000));
+            }
         }
 
         await rm(temp_root, {
@@ -742,10 +541,14 @@ async function main() {
             force: true
         }).catch(() => {});
     }
+
+    if (process.exitCode && process.exitCode !== 0) {
+        process.exit(process.exitCode);
+    }
 }
 
 main().catch((err) => {
-    console.error('[ERROR] CI proxy/Cloudflare smoke test failed.');
+    console.error('[ERROR] Docker compose proxy/Cloudflare smoke test crashed unexpectedly.');
     console.error(err instanceof Error ? err.stack || err.message : String(err));
     process.exit(1);
 });

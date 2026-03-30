@@ -38,12 +38,12 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Verify runner browser dependencies
+      - name: Verify runner container dependencies
         run: |
           set -euo pipefail
-          command -v google-chrome
-          command -v Xvfb
-          google-chrome --version
+          command -v docker
+          docker --version
+          docker compose version
           node --version
           npm --version
 
@@ -55,7 +55,6 @@ jobs:
       - name: Run end-to-end proxy smoke test
         env:
           CI: "true"
-          DISPLAY: ""
         run: |
           set -euo pipefail
           npm run test:ci:proxy-cloudflare

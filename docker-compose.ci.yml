@@ -1,0 +1,16 @@
+services:
+  chrome:
+    environment:
+      ENABLE_GUI_CONTROL: "false"
+      CHROME_ENABLE_GPU: "false"
+
+  thermoptic:
+    environment:
+      AFTER_REQUEST_HOOK_FILE_PATH: /work/hooks/afterrequest.js
+      DEBUG: "true"
+    volumes:
+      - thermoptic_ci_cassl:/work/cassl
+      - ./hooks:/work/hooks:ro
+
+volumes:
+  thermoptic_ci_cassl:
