@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-build:
+    name: docker-build (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+        with:
+          cache-binary: false
+
+      - name: Show Docker version
+        run: docker version
+
+      - name: Build thermoptic image
+        run: docker buildx build --platform linux/amd64 --file Dockerfile --tag thermoptic-ci:root --load .
+
+      - name: Build chrome image
+        run: docker buildx build --platform linux/amd64 --file chrome/Dockerfile --tag thermoptic-ci:chrome --load ./chrome
+
+      - name: Build proxyrouter image
+        run: docker buildx build --platform linux/amd64 --file proxyrouter/Dockerfile --tag thermoptic-ci:proxyrouter --load ./proxyrouter
+
+  compose-e2e:
+    name: compose-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare ignored runtime directories
+        shell: bash
+        run: mkdir -p ssl
+
+      - name: Run compose smoke and Cloudflare hook validation
+        shell: bash
+        run: npm run ci:compose-smoke

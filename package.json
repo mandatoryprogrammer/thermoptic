@@ -5,6 +5,7 @@
   "main": "main.js",
   "type": "module",
   "scripts": {
+    "ci:compose-smoke": "node scripts/compose-cloudflare-ci.test.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "mandatory",
