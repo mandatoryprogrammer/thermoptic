@@ -86,3 +86,10 @@ export const TAB_SWEEP_INTERVAL_MS = parse_env_milliseconds(
     process.env.TAB_SWEEP_INTERVAL_MS,
     DEFAULT_TAB_SWEEP_INTERVAL_MS
 );
+
+const DEFAULT_MAX_CONCURRENT_REQUESTS = 3;
+
+export const MAX_CONCURRENT_REQUESTS = parse_env_milliseconds(
+    process.env.MAX_CONCURRENT_REQUESTS,
+    DEFAULT_MAX_CONCURRENT_REQUESTS
+);

@@ -35,7 +35,8 @@ ensure_unexpected_response_logging();
 const MAX_CAPTURED_UNEXPECTED_RESPONSE_BODY_BYTES = 256 * 1024;
 const UNEXPECTED_RESPONSE_CAPTURE_TIMEOUT_MS = 2000;
 const MAX_CDP_RETRY_ATTEMPTS = 3;
-const CDP_RETRY_DELAY_MS = 0;
+const CDP_RETRY_BASE_DELAY_MS = 1000;
+const CDP_RETRY_MAX_DELAY_MS = 5000;
 
 function ensure_unexpected_response_logging() {
     const patch_flag = Symbol.for('thermoptic.ws.unexpected_response_patch');
@@ -389,19 +390,23 @@ async function execute_with_cdp_retries(operation_name, active_logger, operation
                 break;
             }
 
+            const retry_delay = Math.min(
+                CDP_RETRY_MAX_DELAY_MS,
+                CDP_RETRY_BASE_DELAY_MS * Math.pow(2, attempt)
+            );
+
             if (active_logger && typeof active_logger.warn === 'function') {
                 active_logger.warn('Retrying CDP workflow after failure.', {
                     operation: operation_name,
                     attempt: attempt_number,
                     next_attempt: attempt_number + 1,
+                    retry_delay_ms: retry_delay,
                     retry_reason: 'classified_transient',
                     message: error instanceof Error ? error.message : String(error)
                 });
             }
 
-            if (CDP_RETRY_DELAY_MS > 0) {
-                await utils.wait(CDP_RETRY_DELAY_MS);
-            }
+            await utils.wait(retry_delay);
         }
     }
 
@@ -1676,6 +1681,12 @@ async function _manual_browser_visit(tab, url) {
                 });
 
                 Fetch.requestPaused(async({ requestId, responseStatusCode, responseHeaders, responseErrorReason }) => {
+                    // If the timeout already fired, Fetch is disabled and CDP
+                    // calls will fail. Bail out to avoid spurious errors.
+                    if (settled) {
+                        return;
+                    }
+
                     try {
                         if (responseErrorReason) {
                             await resolve({
