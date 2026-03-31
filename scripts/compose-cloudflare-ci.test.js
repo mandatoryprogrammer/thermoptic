@@ -53,6 +53,10 @@ function log_warn(message, meta = null) {
     console.error(`[WARN] ${message} ${JSON.stringify(meta)}`);
 }
 
+function log_phase(phase, message, meta = null) {
+    log_status(`[${phase}] ${message}`, meta);
+}
+
 function sleep(ms) {
     return new Promise((resolve) => {
         setTimeout(resolve, ms);
@@ -168,6 +172,28 @@ function extract_title_text(html) {
     }
 
     return title_match[1].trim();
+}
+
+function build_response_summary(response, extra = {}) {
+    if (!response || typeof response !== 'object') {
+        return {
+            ...extra,
+            status_code: null,
+            title: '',
+            server: '',
+            cf_mitigated: '',
+            challenge_detected: false
+        };
+    }
+
+    return {
+        ...extra,
+        status_code: response.status_code,
+        title: response.title || '',
+        server: response.headers?.server || '',
+        cf_mitigated: response.headers?.['cf-mitigated'] || '',
+        challenge_detected: is_cloudflare_challenge_response(response)
+    };
 }
 
 function is_cloudflare_challenge_response(response) {
@@ -305,6 +331,12 @@ async function ensure_ssl_directory() {
 }
 
 async function wait_for_proxy_readiness() {
+    log_phase('proxy-readiness', 'Waiting for the thermoptic proxy to answer a proxied request.', {
+        proxy_url: proxy_url,
+        probe_url: example_url,
+        max_attempts: proxy_ready_attempts
+    });
+
     for (let attempt = 1; attempt <= proxy_ready_attempts; attempt += 1) {
         try {
             const response = await fetch_url_with_curl({
@@ -315,15 +347,20 @@ async function wait_for_proxy_readiness() {
             });
 
             assert_example_domain_response(response);
-            log_status('Proxy route smoke test succeeded.', {
+            log_phase('proxy-readiness', 'Proxy route smoke test succeeded.', {
                 attempt: attempt,
-                status_code: response.status_code
+                ...build_response_summary(response, {
+                    proxy_url: proxy_url,
+                    probe_url: example_url
+                })
             });
             return;
         } catch (error) {
-            log_warn('Proxy is not ready yet.', {
+            log_warn('[proxy-readiness] Proxy is not ready yet.', {
                 attempt: attempt,
                 max_attempts: proxy_ready_attempts,
+                proxy_url: proxy_url,
+                probe_url: example_url,
                 message: error instanceof Error ? error.message : String(error)
             });
 
@@ -337,6 +374,7 @@ async function wait_for_proxy_readiness() {
 }
 
 async function dump_compose_diagnostics() {
+    log_warn('[diagnostics] Dumping docker compose service state and recent logs.');
     const compose_ps = await run_compose(['ps'], {
         allow_failure: true
     });
@@ -359,7 +397,9 @@ async function dump_compose_diagnostics() {
 }
 
 async function verify_cloudflare_hook_flow() {
-    log_status('Verifying the target presents a Cloudflare challenge to a direct HTTP client.');
+    log_phase('cloudflare-direct', 'Verifying the target presents a Cloudflare challenge to a direct HTTP client.', {
+        target_url: cloudflare_url
+    });
     const direct_response = await fetch_url_with_curl({
         url: cloudflare_url,
         max_time_seconds: 30
@@ -369,7 +409,15 @@ async function verify_cloudflare_hook_flow() {
         throw new Error(`Expected a direct request to ${cloudflare_url} to be challenged, but received HTTP ${direct_response.status_code} with title "${direct_response.title}".`);
     }
 
-    log_status('Issuing the first proxied request to trigger the Cloudflare after-request solver.');
+    log_phase('cloudflare-direct', 'Direct request returned a Cloudflare challenge as expected.', build_response_summary(direct_response, {
+        target_url: cloudflare_url
+    }));
+
+    log_phase('cloudflare-proxy-first', 'Issuing the first proxied request to trigger the Cloudflare after-request solver.', {
+        target_url: cloudflare_url,
+        proxy_url: proxy_url,
+        timeout_seconds: cloudflare_request_timeout_seconds
+    });
     const first_proxied_response = await fetch_url_with_curl({
         url: cloudflare_url,
         proxy: proxy_url,
@@ -378,7 +426,16 @@ async function verify_cloudflare_hook_flow() {
     });
     assert_cloudflare_response_unblocked(first_proxied_response, 'First Cloudflare request');
 
-    log_status('Issuing the second proxied request to verify future requests remain unblocked.');
+    log_phase('cloudflare-proxy-first', 'First proxied request completed without a Cloudflare challenge.', build_response_summary(first_proxied_response, {
+        target_url: cloudflare_url,
+        proxy_url: proxy_url
+    }));
+
+    log_phase('cloudflare-proxy-second', 'Issuing the second proxied request to verify future requests remain unblocked.', {
+        target_url: cloudflare_url,
+        proxy_url: proxy_url,
+        timeout_seconds: cloudflare_request_timeout_seconds
+    });
     const second_proxied_response = await fetch_url_with_curl({
         url: cloudflare_url,
         proxy: proxy_url,
@@ -387,6 +444,12 @@ async function verify_cloudflare_hook_flow() {
     });
     assert_cloudflare_response_unblocked(second_proxied_response, 'Second Cloudflare request');
 
+    log_phase('cloudflare-proxy-second', 'Second proxied request completed without a Cloudflare challenge.', build_response_summary(second_proxied_response, {
+        target_url: cloudflare_url,
+        proxy_url: proxy_url
+    }));
+
+    log_phase('cloudflare-log-check', 'Inspecting thermoptic service logs to confirm the challenge was solved exactly once.');
     const thermoptic_logs = await run_compose(['logs', '--no-color', 'thermoptic']);
     const all_logs = `${thermoptic_logs.stdout}\n${thermoptic_logs.stderr}`;
     const challenge_detection_message = 'Cloudflare challenge detected in proxied response, attempting browser solve.';
@@ -402,7 +465,13 @@ async function verify_cloudflare_hook_flow() {
         throw new Error(`Expected exactly one replayed response after the Cloudflare solve, observed ${replay_count}.`);
     }
 
-    log_status('Cloudflare after-request solver verified successfully.', {
+    log_phase('cloudflare-log-check', 'Thermoptic logs confirmed a single solve and replay cycle.', {
+        challenge_detection_count: challenge_detection_count,
+        replay_count: replay_count
+    });
+
+    log_phase('cloudflare-summary', 'Cloudflare after-request solver verified successfully.', {
+        target_url: cloudflare_url,
         first_status_code: first_proxied_response.status_code,
         second_status_code: second_proxied_response.status_code,
         first_title: first_proxied_response.title,
@@ -414,14 +483,18 @@ async function main() {
     await ensure_ssl_directory();
 
     try {
-        log_status('Starting the compose stack for CI validation.', {
+        log_phase('setup', 'Prepared local runtime directories for the compose stack.', {
+            ssl_directory: path.join(repo_root, 'ssl')
+        });
+
+        log_phase('compose-up', 'Starting the docker compose stack for CI validation.', {
             compose_project_name: compose_project_name
         });
         await run_compose(['up', '--build', '-d'], {
             inherit_stdio: true
         });
 
-        log_status('Printing compose service state after startup.');
+        log_phase('compose-ps', 'Printing docker compose service state after startup.');
         await run_compose(['ps'], {
             inherit_stdio: true
         });
@@ -429,13 +502,15 @@ async function main() {
         await wait_for_proxy_readiness();
         await verify_cloudflare_hook_flow();
     } catch (error) {
-        log_warn('Compose CI validation failed, dumping diagnostics.', {
+        log_warn('[failure] Compose CI validation failed, dumping diagnostics.', {
             message: error instanceof Error ? error.message : String(error)
         });
         await dump_compose_diagnostics();
         throw error;
     } finally {
-        log_status('Stopping and removing the compose stack.');
+        log_phase('teardown', 'Stopping and removing the docker compose stack.', {
+            compose_project_name: compose_project_name
+        });
         await run_compose(['down', '-v', '--remove-orphans'], {
             allow_failure: true,
             inherit_stdio: true
