@@ -30,6 +30,9 @@ const open_tabs = new Map();
 let tab_reaper_timer = null;
 const cdp_logger = logger.get_logger();
 
+const TAB_CLOSURE_TIMEOUT_MS = 15000;
+const TAB_CLOSURE_STALE_THRESHOLD_MS = 30000;
+
 ensure_unexpected_response_logging();
 
 const MAX_CAPTURED_UNEXPECTED_RESPONSE_BODY_BYTES = 256 * 1024;
@@ -279,6 +282,21 @@ function is_transient_close_error(err) {
     return false;
 }
 
+function with_timeout(promise, ms, label) {
+    let timer;
+    const timeout_promise = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            reject(new Error(`${label} timed out after ${ms}ms`));
+        }, ms);
+        if (timer && typeof timer.unref === 'function') {
+            timer.unref();
+        }
+    });
+    return Promise.race([promise, timeout_promise]).finally(() => {
+        clearTimeout(timer);
+    });
+}
+
 function is_unexpected_http_response_error(err) {
     if (!err) {
         return false;
@@ -459,6 +477,7 @@ function register_open_tab(browser, tab, target_id) {
         target_id: target_id,
         created_at: Date.now(),
         closing: false,
+        closing_since: null,
         disconnect_handler: null,
         retry_count: 0
     };
@@ -627,8 +646,10 @@ async function perform_tab_closure(tab_info, reason) {
         }
     }
 
-    tab_info.browser = null;
-    tab_info.tab = null;
+    if (target_closed) {
+        tab_info.browser = null;
+        tab_info.tab = null;
+    }
 
     return target_closed;
 }
@@ -655,12 +676,17 @@ async function release_tracked_tab(tab_info, reason) {
     }
 
     tab_info.closing = true;
+    tab_info.closing_since = Date.now();
     detach_disconnect_handler(tab_info);
 
     let closed = false;
 
     try {
-        closed = await perform_tab_closure(tab_info, reason);
+        closed = await with_timeout(
+            perform_tab_closure(tab_info, reason),
+            TAB_CLOSURE_TIMEOUT_MS,
+            `perform_tab_closure(${tab_info.target_id})`
+        );
     } catch (err) {
         cdp_logger.error('Unexpected error while closing tab.', {
             target_id: tab_info.target_id,
@@ -677,6 +703,7 @@ async function release_tracked_tab(tab_info, reason) {
 
         tab_info.retry_count = (tab_info.retry_count || 0) + 1;
         tab_info.closing = false;
+        tab_info.closing_since = null;
         attach_disconnect_handler(tab_info);
         schedule_tab_retry(tab_info, reason);
         ensure_tab_reaper();
@@ -689,7 +716,20 @@ function run_tab_reaper_sweep() {
 
     for (const tab_info of open_tabs.values()) {
         if (tab_info.closing) {
-            continue;
+            // Detect stuck closures: if closing has been true for too long,
+            // reset it so the tab can be reaped on this or the next sweep.
+            if (tab_info.closing_since && (now - tab_info.closing_since) >= TAB_CLOSURE_STALE_THRESHOLD_MS) {
+                cdp_logger.warn('Tab closure appears stuck; resetting for reaper retry.', {
+                    target_id: tab_info.target_id,
+                    closing_since: tab_info.closing_since,
+                    stuck_for_ms: now - tab_info.closing_since
+                });
+                tab_info.closing = false;
+                tab_info.closing_since = null;
+                // Fall through to the lifetime check below
+            } else {
+                continue;
+            }
         }
 
         if ((now - tab_info.created_at) >= config.TAB_MAX_LIFETIME_MS) {
