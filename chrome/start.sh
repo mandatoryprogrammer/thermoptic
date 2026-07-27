@@ -206,7 +206,12 @@ CHROME_COMMON_FLAGS=(
   --disable-default-apps
   --disable-browser-signin
   --disable-sync
-  --disable-features=ChromeWhatsNewUI,PermissionPromptSurveyUi,PrivacySandboxSettings4
+  # HttpsUpgrades silently rewrites http:// navigations to https:// before the
+  # request is made. manual_browser_visit() in cdp.js registers its CDP Fetch
+  # interception pattern against the original http:// URL, so the upgraded
+  # request never matches and the navigation hangs until it times out. Every
+  # plain-HTTP proxied request fails this way unless the feature is disabled.
+  --disable-features=ChromeWhatsNewUI,PermissionPromptSurveyUi,PrivacySandboxSettings4,HttpsUpgrades
   --window-position=0,0
   "--window-size=${CHROME_SCREEN_WIDTH},${CHROME_SCREEN_HEIGHT}"
   --start-maximized
