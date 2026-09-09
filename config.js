@@ -44,6 +44,7 @@ export const ALWAYS_CLEAN_HEADERS = [
     'te',
     'upgrade-insecure-requests',
     'user-agent',
+    'dnt',
     'proxy-authorization',
     'proxy-connection',
 
