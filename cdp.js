@@ -1463,25 +1463,32 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
 
                         const headers = fetchgen.convert_headers_map_to_array(request.headers);
                         // Pull Origin header so we now what to reply with to pass the CORS check
-                        const cors_origin = fetchgen.get_header_value_ignore_case('Origin', headers);
-                        const cors_method = fetchgen.get_header_value_ignore_case('Access-Control-Request-Method', headers);
-                        const cors_headers = fetchgen.get_header_value_ignore_case('Access-Control-Request-Headers', headers);
+                        // Access-Control-Request-Method/Headers are optional per the CORS spec,
+                        // and can be absent (or stripped by an intermediate proxy like Caido).
+                        // Chrome's CDP bindings reject fulfillRequest if any header entry has
+                        // an undefined/missing value, so default everything before emitting.
+                        const cors_origin = fetchgen.get_header_value_ignore_case('Origin', headers) || '*';
+                        const cors_method = fetchgen.get_header_value_ignore_case('Access-Control-Request-Method', headers) || '';
+                        const cors_headers = fetchgen.get_header_value_ignore_case('Access-Control-Request-Headers', headers) || '';
+                        const cors_allow_headers = [
+                            { name: 'Access-Control-Allow-Origin', value: cors_origin },
+                            { name: 'Access-Control-Allow-Methods', value: cors_method },
+                            { name: 'Access-Control-Allow-Credentials', value: 'true' },
+                            // Never cache CORS preflight, we need to make sure the request
+                            // chain happens in the same order each time in case the user is doing
+                            // an OPTIONS request through the proxy.
+                            { name: 'Access-Control-Max-Age', value: '0' },
+                            { name: 'Content-Type', value: 'text/plain; charset=utf-8' },
+                            { name: 'Content-Length', value: String(Buffer.byteLength('')) },
+                        ];
+                        if (cors_headers) {
+                            cors_allow_headers.push({ name: 'Access-Control-Allow-Headers', value: cors_headers });
+                        }
 
                         await Fetch.fulfillRequest({
                             requestId,
                             responseCode: 200,
-                            responseHeaders: [
-                                { name: 'Access-Control-Allow-Origin', value: cors_origin },
-                                { name: 'Access-Control-Allow-Methods', value: cors_method },
-                                { name: 'Access-Control-Allow-Headers', value: cors_headers },
-                                { name: 'Access-Control-Allow-Credentials', value: 'true' },
-                                // Never cache CORS preflight, we need to make sure the request
-                                // chain happens in the same order each time in case the user is doing
-                                // an OPTIONS request through the proxy.
-                                { name: 'Access-Control-Max-Age', value: '0' },
-                                { name: 'Content-Type', value: 'text/plain; charset=utf-8' },
-                                { name: 'Content-Length', value: String(Buffer.byteLength('')) },
-                            ],
+                            responseHeaders: cors_allow_headers,
                             body: Buffer.from('').toString('base64'),
                         });
                         is_cors_preflight_handled = true;
@@ -1533,12 +1540,25 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
                                 body = atob(body);
                             }
                         }
-                        const raw_body = Buffer.from(body);
+                        // CDP delivers non-base64 bodies as latin1-encoded text;
+                        // utf8 decoding mangles bytes >= 0x80 and breaks content-length parity.
+                        const raw_body = Buffer.from(body, 'latin1');
 
                         let formatted_headers = {};
                         responseHeaders.forEach(header_pair => {
                             formatted_headers[header_pair.name] = header_pair.value;
                         });
+                        // CDP's Fetch.getResponseBody returns the DECODED (decompressed) body,
+                        // but the captured responseHeaders carry the upstream compressed-size
+                        // content-length and a now-incorrect content-encoding. Passing those
+                        // through verbatim desyncs framing: the body is longer than the
+                        // declared length, and the surplus bytes get parsed as the start of
+                        // the next response on the connection (breaking keep-alive/pipelined
+                        // connections, e.g. a browser or chained proxy reusing connections).
+                        // Recompute from the actual buffer and drop the encoding header.
+                        delete formatted_headers['content-encoding'];
+                        delete formatted_headers['Content-Encoding'];
+                        formatted_headers['content-length'] = String(raw_body.length);
 
                         const response_string = fetchgen.get_blank_response();
                         await Fetch.fulfillRequest({
@@ -1694,7 +1714,9 @@ async function _manual_browser_visit(tab, url) {
                             if (response_tmp.base64Encoded) {
                                 raw_body = Buffer.from(response_tmp.body, 'base64');
                             } else {
-                                raw_body = Buffer.from(response_tmp.body, 'utf8');
+                                // CDP delivers non-base64 bodies as latin1-encoded text;
+                                // utf8 decoding mangles bytes >= 0x80 and breaks content-length parity.
+                                raw_body = Buffer.from(response_tmp.body, 'latin1');
                             }
                         }
 
@@ -1706,12 +1728,9 @@ async function _manual_browser_visit(tab, url) {
                         });
 
                         const normalized_headers = utils.fetch_headers_to_proxy_response_headers(responseHeaders);
-                        if (typeof normalized_headers['content-length'] !== 'undefined') {
-                            normalized_headers['content-length'] = String(raw_body.length);
-                        }
-                        if (typeof normalized_headers['Content-Length'] !== 'undefined') {
-                            normalized_headers['Content-Length'] = String(raw_body.length);
-                        }
+                        // Always recompute content-length from the actual body: the upstream
+                        // value can drift if any byte >= 0x80 was re-encoded in transit.
+                        normalized_headers['content-length'] = String(raw_body.length);
                         delete normalized_headers['content-encoding'];
                         delete normalized_headers['Content-Encoding'];
 
