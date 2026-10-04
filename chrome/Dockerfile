@@ -20,6 +20,7 @@ RUN ln -sf /usr/share/javascript/jquery/jquery.min.js /usr/share/xpra/www/js/lib
 
 RUN mkdir -p /etc/opt/chrome/policies/managed
 COPY policies/local_network_access.json /etc/opt/chrome/policies/managed/local_network_access.json
+COPY policies/http_request_scheme.json /etc/opt/chrome/policies/managed/http_request_scheme.json
 
 # Create non-root user with fixed UID/GID
 RUN groupadd -g 1001 chromeuser \
