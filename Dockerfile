@@ -9,6 +9,7 @@ COPY package-lock.json /work/
 RUN npm install
 
 COPY cdp.js /work/
+COPY cdptransport.js /work/
 COPY certificates.js /work/
 COPY config.js /work/
 COPY fetchgen.js /work/

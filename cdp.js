@@ -1,4 +1,4 @@
-import CDP from 'chrome-remote-interface';
+import * as cdptransport from './cdptransport.js';
 import { createRequire } from 'module';
 import * as fetchgen from './fetchgen.js';
 import * as utils from './utils.js';
@@ -6,7 +6,6 @@ import * as config from './config.js';
 import { writeFile, mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
-import { request as http_request } from 'node:http';
 import * as logger from './logger.js';
 
 const REDIRECT_STATUS_CODES = [
@@ -26,6 +25,9 @@ const chrome_remote_interface_entry = esm_require.resolve('chrome-remote-interfa
 const cri_require = createRequire(chrome_remote_interface_entry);
 const WebSocket = cri_require('ws');
 
+const CDP_CLEANUP_TIMEOUT_MS = 6000;
+const CDP_CLEANUP_STAGE_MS = 1500;
+const CDP_CONNECT_TIMEOUT_MS = 5000;
 const open_tabs = new Map();
 let tab_reaper_timer = null;
 const cdp_logger = logger.get_logger();
@@ -459,8 +461,11 @@ function register_open_tab(browser, tab, target_id) {
         target_id: target_id,
         created_at: Date.now(),
         closing: false,
+        close_promise: null,
         disconnect_handler: null,
-        retry_count: 0
+        retry_count: 0,
+        retry_timer: null,
+        next_retry_at: 0
     };
 
     attach_disconnect_handler(tab_info);
@@ -470,217 +475,167 @@ function register_open_tab(browser, tab, target_id) {
     return tab_info;
 }
 
-async function close_target_with_fresh_session(target_id) {
-    let fallback_browser = null;
-    try {
-        fallback_browser = await start_browser_session();
-        const { Target } = fallback_browser;
-        await Target.closeTarget({ targetId: target_id });
-        return {
-            success: true
-        };
-    } catch (err) {
-        if (is_target_already_closed_error(err)) {
-            return {
-                success: true
-            };
-        }
-        if (is_transient_close_error(err)) {
-            return {
-                success: false,
-                error: err,
-                transient: true
-            };
-        }
-        return {
-            success: false,
-            error: err
-        };
-    } finally {
-        await close_browser_session(fallback_browser);
-    }
+function cleanup_stage_deadline(deadline) {
+    return Math.min(deadline, Date.now() + CDP_CLEANUP_STAGE_MS);
 }
 
-async function close_target_via_http(target_id) {
-    const { host, port } = get_cdp_config();
-
-    return new Promise((resolve) => {
-        const req = http_request({
-            host: host,
-            port: port,
-            path: `/json/close/${target_id}`,
-            method: 'GET',
-            timeout: 3000
-        }, (res) => {
-            res.resume();
-
-            if (!res.statusCode) {
-                resolve({ success: false, error: new Error('No status code from closeTarget HTTP call') });
-                return;
+async function confirm_target_absent(target_id, deadline, browser = null) {
+    while (Date.now() < deadline) {
+        let targets;
+        if (browser) {
+            const result = await cdptransport.with_deadline(browser.Target.getTargets(), deadline, 'Target.getTargets');
+            targets = result.targetInfos;
+            if (!Array.isArray(targets) || targets.some(item => !item || typeof item.targetId !== 'string')) {
+                throw new Error('Invalid CDP target inventory');
             }
-
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-                resolve({ success: true });
-                return;
+            if (!targets.some(item => item.targetId === target_id)) {
+                return true;
             }
-
-            if (res.statusCode === 404) {
-                resolve({ success: true });
-                return;
+        } else {
+            targets = await cdptransport.get_json(get_cdp_config(), '/json/list', deadline);
+            if (!Array.isArray(targets) || targets.some(item => !item || typeof item.id !== 'string' || typeof item.type !== 'string')) {
+                throw new Error('Invalid CDP HTTP target inventory');
             }
+            if (!targets.some(item => item.id === target_id)) {
+                return true;
+            }
+        }
+        await utils.wait(Math.min(50, Math.max(0, deadline - Date.now())));
+    }
+    return false;
+}
 
-            resolve({
-                success: false,
-                error: new Error(`Unexpected status ${res.statusCode} from closeTarget HTTP call`)
-            });
-        });
+async function close_target_via_http(target_id, deadline) {
+    const response = await cdptransport.request_cdp(
+        get_cdp_config(), `/json/close/${encodeURIComponent(target_id)}`, deadline, 4096
+    );
+    if ((response.status >= 200 && response.status < 300) || response.status === 404) {
+        // Neither a close acknowledgement nor a proxy-generated 404 proves closure.
+        return await confirm_target_absent(target_id, deadline);
+    }
+    throw new Error(`HTTP closeTarget returned ${response.status}`);
+}
 
-        req.on('timeout', () => {
-            req.destroy(new Error('HTTP closeTarget timeout'));
-        });
-
-        req.on('error', (err) => {
-            resolve({ success: false, error: err });
-        });
-
-        req.end();
-    });
+async function close_target_via_session(browser, target_id, deadline) {
+    try {
+        await cdptransport.with_deadline(
+            browser.Target.closeTarget({ targetId: target_id }), deadline, 'Target.closeTarget'
+        );
+    } catch (err) {
+        if (is_target_already_closed_error(err)) {
+            return true;
+        }
+        throw err;
+    }
+    // Chrome can acknowledge a close while a navigating target is still alive.
+    return await confirm_target_absent(target_id, deadline, browser);
 }
 
 async function perform_tab_closure(tab_info, reason) {
-    const target_id = tab_info.target_id;
-    let target_closed = false;
-
-    if (tab_info.browser && tab_info.browser.Target && typeof tab_info.browser.Target.closeTarget === 'function') {
-        try {
-            await tab_info.browser.Target.closeTarget({ targetId: target_id });
-            target_closed = true;
-        } catch (err) {
-            if (is_target_already_closed_error(err)) {
-                target_closed = true;
-            } else if (is_transient_close_error(err)) {
-                cdp_logger.info('Primary CDP session already closed while closing target; falling back.', {
-                    target_id: target_id,
-                    reason: reason
-                });
-            } else {
-                cdp_logger.error('Failed to close target via existing session.', {
-                    target_id: target_id,
-                    reason: reason,
-                    message: err && err.message ? err.message : String(err),
-                    stack: err && err.stack ? err.stack : undefined
-                });
-            }
-        }
-    }
-
-    if (!target_closed) {
-        const fresh_result = await close_target_with_fresh_session(target_id);
-        if (!fresh_result.success && fresh_result.error) {
-            if (fresh_result.transient) {
-                cdp_logger.info('Fallback CDP session closed early; attempting HTTP endpoint.', {
-                    target_id: target_id,
-                    reason: reason
-                });
-            } else if (!is_target_already_closed_error(fresh_result.error)) {
-                cdp_logger.error('Fallback closeTarget failed.', {
-                    target_id: target_id,
-                    reason: reason,
-                    message: fresh_result.error && fresh_result.error.message ? fresh_result.error.message : String(fresh_result.error),
-                    stack: fresh_result.error && fresh_result.error.stack ? fresh_result.error.stack : undefined
-                });
-            }
-        }
-        target_closed = target_closed || fresh_result.success;
-    }
-
-    if (!target_closed) {
-        const http_result = await close_target_via_http(target_id);
-        if (!http_result.success && http_result.error && !is_target_already_closed_error(http_result.error)) {
-            cdp_logger.error('HTTP closeTarget failed.', {
-                target_id: target_id,
-                reason: reason,
-                message: http_result.error && http_result.error.message ? http_result.error.message : String(http_result.error),
-                stack: http_result.error && http_result.error.stack ? http_result.error.stack : undefined
-            });
-        }
-        target_closed = target_closed || http_result.success;
-    }
-
-    if (tab_info.tab && typeof tab_info.tab.close === 'function') {
-        try {
-            await tab_info.tab.close();
-        } catch (err) {
-            if (is_transient_close_error(err)) {
-                cdp_logger.debug('Tab transport already closed; assuming target gone.', {
-                    target_id: target_id,
-                    reason: reason
-                });
-            } else if (!is_target_already_closed_error(err)) {
-                cdp_logger.error('Failed to close tab session.', {
-                    target_id: target_id,
-                    reason: reason,
-                    message: err && err.message ? err.message : String(err),
-                    stack: err && err.stack ? err.stack : undefined
-                });
-            }
-        }
-    }
-
+    const { target_id, browser, tab } = tab_info;
+    const deadline = Date.now() + CDP_CLEANUP_TIMEOUT_MS;
     tab_info.browser = null;
     tab_info.tab = null;
+    let fallback_browser = null;
+    let last_error = null;
 
-    return target_closed;
+    try {
+        if (browser) {
+            try {
+                if (await close_target_via_session(browser, target_id, cleanup_stage_deadline(deadline))) {
+                    return true;
+                }
+            } catch (err) {
+                last_error = err;
+            }
+        }
+        // Retire a stalled session immediately; its pending commands cannot accumulate.
+        cdptransport.terminate_session(browser);
+        try {
+            if (await close_target_via_http(target_id, cleanup_stage_deadline(deadline))) {
+                return true;
+            }
+        } catch (err) {
+            last_error = err;
+        }
+        // Some CDP bridges expose WebSockets but not /json/close. A new connection
+        // remains available as a fallback, with discovery and handshake cancellation.
+        if (Date.now() < deadline) {
+            try {
+                const fallback_deadline = cleanup_stage_deadline(deadline);
+                fallback_browser = await cdptransport.connect(
+                    get_cdp_config(), null, fallback_deadline, browser ? browser.protocol : null
+                );
+                if (await close_target_via_session(fallback_browser, target_id, fallback_deadline)) {
+                    return true;
+                }
+            } catch (err) {
+                last_error = err;
+            }
+        }
+        cdp_logger.warn('Tab cleanup could not confirm target removal; retaining for retry.', {
+            target_id: target_id,
+            reason: reason,
+            message: last_error ? normalize_error_message(last_error) : 'Target still present after close acknowledgement'
+        });
+        return false;
+    } finally {
+        // All shutdowns share the remaining overall budget, rather than extending it.
+        await Promise.all([browser, tab, fallback_browser].map(session => {
+            return cdptransport.close_session(session, cleanup_stage_deadline(deadline));
+        }));
+    }
 }
 
 function schedule_tab_retry(tab_info, reason) {
-    const attempts = (tab_info.retry_count || 0);
-    const delay = Math.min(5000, 500 * Math.max(1, attempts));
-
-    const timer = setTimeout(() => {
-        if (!open_tabs.has(tab_info.target_id) || tab_info.closing) {
+    clearTimeout(tab_info.retry_timer);
+    const delay = Math.min(30000, 500 * (2 ** Math.min(6, Math.max(0, tab_info.retry_count - 1))));
+    tab_info.next_retry_at = Date.now() + delay;
+    tab_info.retry_timer = setTimeout(() => {
+        tab_info.retry_timer = null;
+        if (open_tabs.get(tab_info.target_id) !== tab_info || tab_info.closing) {
             return;
         }
-        release_tracked_tab(tab_info, `${reason} (retry)`);
+        release_tracked_tab(tab_info, reason);
     }, delay);
-
-    if (timer && typeof timer.unref === 'function') {
-        timer.unref();
-    }
+    tab_info.retry_timer.unref();
 }
 
 async function release_tracked_tab(tab_info, reason) {
-    if (!tab_info || tab_info.closing) {
+    if (!tab_info) {
         return;
     }
-
-    tab_info.closing = true;
-    detach_disconnect_handler(tab_info);
-
-    let closed = false;
-
-    try {
-        closed = await perform_tab_closure(tab_info, reason);
-    } catch (err) {
-        cdp_logger.error('Unexpected error while closing tab.', {
-            target_id: tab_info.target_id,
-            reason: reason,
-            message: err && err.message ? err.message : String(err),
-            stack: err && err.stack ? err.stack : undefined
-        });
-    } finally {
-        if (closed) {
-            open_tabs.delete(tab_info.target_id);
-            maybe_stop_tab_reaper();
-            return;
-        }
-
-        tab_info.retry_count = (tab_info.retry_count || 0) + 1;
-        tab_info.closing = false;
-        attach_disconnect_handler(tab_info);
-        schedule_tab_retry(tab_info, reason);
-        ensure_tab_reaper();
+    if (tab_info.close_promise) {
+        return await tab_info.close_promise;
     }
+    tab_info.closing = true;
+    clearTimeout(tab_info.retry_timer);
+    tab_info.retry_timer = null;
+    detach_disconnect_handler(tab_info);
+    tab_info.close_promise = (async () => {
+        let closed = false;
+        try {
+            closed = await perform_tab_closure(tab_info, reason);
+        } catch (err) {
+            cdp_logger.error('Unexpected error while closing tab.', {
+                target_id: tab_info.target_id,
+                reason: reason,
+                message: normalize_error_message(err)
+            });
+        } finally {
+            tab_info.closing = false;
+            tab_info.close_promise = null;
+            if (closed) {
+                open_tabs.delete(tab_info.target_id);
+                maybe_stop_tab_reaper();
+            } else {
+                tab_info.retry_count += 1;
+                schedule_tab_retry(tab_info, reason);
+                ensure_tab_reaper();
+            }
+        }
+    })();
+    return await tab_info.close_promise;
 }
 
 function run_tab_reaper_sweep() {
@@ -688,7 +643,7 @@ function run_tab_reaper_sweep() {
     const expired_tabs = [];
 
     for (const tab_info of open_tabs.values()) {
-        if (tab_info.closing) {
+        if (tab_info.closing || now < tab_info.next_retry_at) {
             continue;
         }
 
@@ -741,109 +696,7 @@ function timeout_action(reject_func) {
 }
 
 async function close_browser_session(browser) {
-    if (!browser) {
-        return;
-    }
-    try {
-        await browser.close();
-    } catch (err) {
-        cdp_logger.error('Failed to close browser session.', {
-            message: err && err.message ? err.message : String(err),
-            stack: err && err.stack ? err.stack : undefined
-        });
-    }
-}
-
-async function cleanup_failed_new_tab(target_agent, target_id, creation_error) {
-    const creation_message = normalize_error_message(creation_error);
-    const creation_stack = creation_error instanceof Error ? creation_error.stack : undefined;
-
-    cdp_logger.warn('Cleaning up target after new tab creation failure.', {
-        target_id: target_id,
-        message: creation_message || undefined,
-        stack: creation_stack
-    });
-
-    let target_closed = false;
-
-    if (target_agent && typeof target_agent.closeTarget === 'function') {
-        try {
-            await target_agent.closeTarget({ targetId: target_id });
-            target_closed = true;
-        } catch (close_err) {
-            if (is_target_already_closed_error(close_err)) {
-                target_closed = true;
-            } else if (is_transient_close_error(close_err)) {
-                cdp_logger.info('Primary CDP session closed while cleaning failed new tab; retrying cleanup.', {
-                    target_id: target_id
-                });
-            } else {
-                cdp_logger.error('Failed to close target via existing session after new tab failure.', {
-                    target_id: target_id,
-                    message: close_err && close_err.message ? close_err.message : String(close_err),
-                    stack: close_err && close_err.stack ? close_err.stack : undefined
-                });
-            }
-        }
-    }
-
-    if (target_closed) {
-        return;
-    }
-
-    let fallback_result = {
-        success: false
-    };
-    try {
-        const candidate_result = await close_target_with_fresh_session(target_id);
-        if (candidate_result) {
-            fallback_result = candidate_result;
-        }
-    } catch (fallback_err) {
-        fallback_result = {
-            success: false,
-            error: fallback_err
-        };
-    }
-
-    if (fallback_result.success) {
-        return;
-    }
-
-    if (fallback_result.transient) {
-        cdp_logger.info('Fallback CDP session closed early while cleaning failed new tab; attempting HTTP endpoint.', {
-            target_id: target_id
-        });
-    } else if (fallback_result.error && !is_target_already_closed_error(fallback_result.error)) {
-        cdp_logger.error('Fallback closeTarget failed after new tab failure.', {
-            target_id: target_id,
-            message: fallback_result.error && fallback_result.error.message ? fallback_result.error.message : String(fallback_result.error),
-            stack: fallback_result.error && fallback_result.error.stack ? fallback_result.error.stack : undefined
-        });
-    }
-
-    let http_result = {
-        success: false
-    };
-    try {
-        const candidate_http_result = await close_target_via_http(target_id);
-        if (candidate_http_result) {
-            http_result = candidate_http_result;
-        }
-    } catch (http_err) {
-        http_result = {
-            success: false,
-            error: http_err
-        };
-    }
-
-    if (!http_result.success && http_result.error && !is_target_already_closed_error(http_result.error)) {
-        cdp_logger.error('HTTP closeTarget failed after new tab failure.', {
-            target_id: target_id,
-            message: http_result.error && http_result.error.message ? http_result.error.message : String(http_result.error),
-            stack: http_result.error && http_result.error.stack ? http_result.error.stack : undefined
-        });
-    }
+    await cdptransport.close_session(browser, Date.now() + CDP_CLEANUP_STAGE_MS);
 }
 
 /*
@@ -1808,70 +1661,30 @@ function get_cdp_config() {
     }
 }
 
-function get_browser_websocket_url(version_payload) {
-    if (!version_payload || typeof version_payload !== 'object') {
-        return null;
-    }
-
-    const ws_url = version_payload.webSocketDebuggerUrl;
-    if (!ws_url || typeof ws_url !== 'string' || !ws_url.includes('/devtools/browser/')) {
-        return null;
-    }
-
-    return ws_url;
-}
-
 export async function start_browser_session() {
-    const cdp_config = get_cdp_config();
-
-    try {
-        const version_payload = await CDP.Version(cdp_config);
-        const browser_websocket_url = get_browser_websocket_url(version_payload);
-
-        if (browser_websocket_url) {
-            return CDP({
-                target: browser_websocket_url
-            });
-        }
-
-        cdp_logger.warn('CDP version payload did not include a browser websocket URL; falling back to default connection mode.', {
-            host: cdp_config.host,
-            port: cdp_config.port
-        });
-    } catch (err) {
-        cdp_logger.warn('Failed to resolve browser websocket URL; falling back to default connection mode.', {
-            host: cdp_config.host,
-            port: cdp_config.port,
-            message: err && err.message ? err.message : String(err),
-            stack: err && err.stack ? err.stack : undefined
-        });
-    }
-
-    return CDP(cdp_config);
+    return await cdptransport.connect(get_cdp_config(), null, Date.now() + CDP_CONNECT_TIMEOUT_MS);
 }
 
 export async function new_tab(browser, initial_url = 'about:blank') {
     const { Target } = browser;
-    const { targetId: target_id } = await Target.createTarget({
-        url: initial_url
-    });
-    let tab = null;
+    const { targetId: target_id } = await Target.createTarget({ url: initial_url });
+    // Own the target as soon as Chrome returns its ID, before any attachment I/O.
+    const tab_info = register_open_tab(browser, null, target_id);
     try {
-        tab = await CDP({
-            ... {
-                target: target_id
-            },
-            ...get_cdp_config(),
-        });
+        const tab = await cdptransport.connect(
+            get_cdp_config(), target_id, Date.now() + CDP_CONNECT_TIMEOUT_MS, browser.protocol
+        );
+        if (open_tabs.get(target_id) !== tab_info || tab_info.closing) {
+            await close_browser_session(tab);
+            throw new Error('Target was closed during CDP attachment');
+        }
+        tab_info.tab = tab;
+        attach_disconnect_handler(tab_info);
+        return { tab: tab, target_id: target_id };
     } catch (err) {
-        await cleanup_failed_new_tab(Target, target_id, err);
+        await release_tracked_tab(tab_info, 'tab attachment failed');
         throw err;
     }
-    register_open_tab(browser, tab, target_id);
-    return {
-        'tab': tab,
-        'target_id': target_id
-    };
 }
 
 async function click_element_as_user(tab, selector = '#clickme') {
@@ -1936,22 +1749,8 @@ async function click_element_as_user(tab, selector = '#clickme') {
 }
 
 export async function close_tab(browser, tab, target_id) {
-    const tracked_tab = open_tabs.get(target_id);
-    if (tracked_tab) {
-        await release_tracked_tab(tracked_tab, 'manual close');
-        return;
-    }
-
-    const synthetic_tab_info = {
-        browser: browser,
-        tab: tab,
-        target_id: target_id,
-        created_at: Date.now(),
-        closing: true,
-        disconnect_handler: null
-    };
-
-    await perform_tab_closure(synthetic_tab_info, 'manual close');
+    const tab_info = open_tabs.get(target_id) || register_open_tab(browser, tab, target_id);
+    await release_tracked_tab(tab_info, 'manual close');
 }
 
 export async function open_tab_to_intercept(tab, url) {
