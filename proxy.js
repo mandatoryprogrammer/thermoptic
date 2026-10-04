@@ -5,7 +5,9 @@ import * as utils from './utils.js';
 import * as logger from './logger.js';
 import { CA_CERTIFICATE_PATH, CA_PRIVATE_KEY_PATH, ensure_ca_material } from './certificates.js';
 const CONNECTION_STATE_TTL_MS = 15 * 60 * 1000;
-const FILTERED_RESPONSE_HEADER_NAMES = new Set(['content-encoding']);
+const FILTERED_RESPONSE_HEADER_NAMES = new Set([
+    'content-encoding', 'connection', 'keep-alive', 'proxy-connection'
+]);
 const HTTP2_INCOMPATIBLE_RESPONSE_HEADER_NAMES = new Set([
     'connection',
     'proxy-connection',
@@ -121,6 +123,22 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
                 const sanitized_headers = sanitize_proxy_response_headers(response.header ?? {}, {
                     strip_http2_incompatible_headers: is_http2_downstream
                 });
+                if (!is_http2_downstream) {
+                    // mockttp removes Node's default Connection header. Select
+                    // persistence from this client, never the upstream connection.
+                    const connection_options = String(mockttp_request.headers.connection || '')
+                        .toLowerCase().split(',').map(value => value.trim());
+                    const response_header_names = Object.keys(sanitized_headers).map(name => name.toLowerCase());
+                    const transfer_encoding = Object.entries(sanitized_headers)
+                        .find(([name]) => name.toLowerCase() === 'transfer-encoding');
+                    const is_chunked = transfer_encoding && String(transfer_encoding[1])
+                        .toLowerCase().split(',').pop().trim() === 'chunked';
+                    const response_is_delimited = utils.response_has_no_body(mockttp_request.method, response.statusCode) ||
+                        (!transfer_encoding && response_header_names.includes('content-length')) || is_chunked;
+                    const keep_alive = response_is_delimited && !connection_options.includes('close') &&
+                        (http_version === '1.1' || connection_options.includes('keep-alive'));
+                    sanitized_headers.connection = keep_alive ? 'keep-alive' : 'close';
+                }
                 const response_payload = {
                     statusCode: response.statusCode ?? 500,
                     statusMessage: response.statusMessage,

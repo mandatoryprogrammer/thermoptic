@@ -19,3 +19,23 @@ Rebuild and recreate the Chrome service to install the policy: `docker compose u
 Explicit HTTPS requests, certificate validation, HSTS, and server-issued redirects remain enabled. An HTTP URL covered by HSTS can still return Chrome's 307 upgrade redirect. These settings do not guarantee HTTP for HSTS hosts or measure TLS/HTTP fingerprint parity.
 
 Policy references: [HttpsUpgradesEnabled](https://chromeenterprise.google/policies/#HttpsUpgradesEnabled) and [HttpsOnlyMode](https://chromeenterprise.google/policies/#HttpsOnlyMode).
+
+## Captured response bytes and framing
+
+Both CDP capture paths decode base64 directly into a `Buffer`, with UTF-8 for protocol text. Converting base64 through `atob()` and then UTF-8 re-encodes bytes above `0x7f`; it does not preserve binary or UTF-8 response bytes. Chrome also decompresses captured bodies, so upstream compression and transfer framing cannot describe the returned buffer.
+
+The shared header formatter removes content encoding, every casing of content length, hop-by-hop fields (including fields named by `Connection`), and trailer declarations. Ordinary responses receive one length for the captured bytes; repeated headers remain separate values, including `Set-Cookie`. HEAD and 304 omit the optional representation length because the decoded representation size is unknown; 1xx and 204 omit the forbidden length, and 205 returns an empty body with length zero. Redirects retain their status and `Location` but return an empty body because CDP does not expose redirect bodies.
+
+The downstream HTTP/1 connection policy is derived from the client's HTTP version and `Connection` options, independently of the browser's upstream connection. This explicit header is needed because mockttp removes Node's default connection header. HTTP/2 receives no connection-specific headers. Responses without explicit framing or bodyless semantics close the HTTP/1 connection.
+
+The existing synthetic OPTIONS preflight policy only applies when both `Origin` and `Access-Control-Request-Method` identify a real preflight. `Access-Control-Request-Headers` is optional; when absent, no `Access-Control-Allow-Headers` field is emitted. Ordinary same-origin OPTIONS requests, and requests whose preflight is cached, continue to the server. Chrome response-stage network errors fail promptly instead of being treated as new requests until timeout.
+
+### Manual verification, 2026-10-04
+
+Chrome 152.0.7977.64 and Node 18.20.4 were used with existing repository dependencies. The browser had a disposable profile and the repository's managed policies mounted into an isolated process. All upstream targets were loopback HTTP fixtures; the actual proxy used a temporary CA and generated credentials. No user Chrome profile or repository CA material was used.
+
+The review-only harness was run with `CHECK_TIMEOUTS=1 node /tmp/thermoptic-response-fix-20261004/verify.mjs`; its source, `run.log`, and `results.json` are local review artifacts in that directory, not repository dependencies or a committed test suite. It sends ordinary requests through `get_http_proxy()` and `requestengine.process_request()` with an HTTP/1 keep-alive client.
+
+All 38 end-to-end checks passed; 32 requests reused an existing downstream connection. Coverage includes navigation and fetch for ASCII/Unicode, gzip/Brotli/deflate, mixed header casing, chunked responses with trailers and connection-specific fields, empty bodies, redirects, 204/205/304, and partial responses; binary fetch, compressed HEAD, same-origin OPTIONS, cross-origin OPTIONS with and without custom headers, caller cookie forwarding, network errors, timeout expiry, and a successful request after timeouts. Body bytes and wire header lengths are checked, along with header uniqueness, removal of conflicting transfer framing, and connection reuse. Repeated `Set-Cookie` preservation is checked at the formatter boundary: this Chrome build omits those headers from the observed Fetch response events, so the live cookie check covers caller cookies reaching the upstream server.
+
+Syntax checks: `node --check cdp.js`, `node --check utils.js`, and `node --check proxy.js`; whitespace check: `git diff --check`. These changes do not alter Chrome launch parameters, navigation mechanisms, TLS settings, or generated ordinary request headers. Fingerprint parity was not measured by the loopback checks.

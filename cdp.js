@@ -1239,6 +1239,47 @@ export async function set_each_file_input_via_input_api(cdp, file_paths) {
     }
 }
 
+async function read_captured_response_body(tab, request_id, method, status_code) {
+    if (utils.response_has_no_body(method, status_code) || REDIRECT_STATUS_CODES.includes(status_code)) {
+        // Fetch.getResponseBody does not expose redirect bodies. Other empty
+        // responses need no body read (which can fail for HEAD/204/304).
+        return Buffer.alloc(0);
+    }
+    const response = await tab.Fetch.getResponseBody({ requestId: request_id });
+    if (response.base64Encoded) {
+        return Buffer.from(response.body, 'base64');
+    }
+    return Buffer.from(response.body, 'utf8');
+}
+
+function cors_preflight_response_headers(request) {
+    if (request.method.toUpperCase() !== 'OPTIONS') {
+        return null;
+    }
+    const headers = fetchgen.convert_headers_map_to_array(request.headers);
+    const origin = fetchgen.get_header_value_ignore_case('Origin', headers);
+    const method = fetchgen.get_header_value_ignore_case('Access-Control-Request-Method', headers);
+    if (!origin || !method) {
+        // Ordinary OPTIONS requests (including when preflight is cached) must
+        // reach the upstream server instead of being swallowed by the mock.
+        return null;
+    }
+    const requested_headers = fetchgen.get_header_value_ignore_case('Access-Control-Request-Headers', headers);
+    const response_headers = [
+        { name: 'Access-Control-Allow-Origin', value: origin },
+        { name: 'Access-Control-Allow-Methods', value: method },
+        { name: 'Access-Control-Allow-Credentials', value: 'true' },
+        // Keep synthetic preflight permission scoped to this request chain.
+        { name: 'Access-Control-Max-Age', value: '0' },
+        { name: 'Content-Type', value: 'text/plain; charset=utf-8' },
+        { name: 'Content-Length', value: '0' }
+    ];
+    if (requested_headers) {
+        response_headers.push({ name: 'Access-Control-Allow-Headers', value: requested_headers });
+    }
+    return response_headers;
+}
+
 /*
     Serves the HTML on the URL specified and captures and returns the raw HTTP response.
 */
@@ -1294,7 +1335,13 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
                 responseHeaders
             }) => {
                 try {
-                    const { url } = request;
+                    if (settled) {
+                        return;
+                    }
+                    if (responseErrorReason) {
+                        reject(new Error(responseErrorReason));
+                        return;
+                    }
                     const is_request = (responseStatusCode === undefined);
 
                     cdp_logger.debug('Intercepted request during navigation capture.', {
@@ -1304,41 +1351,23 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
                         frame_id: frameId
                     });
 
-                    // Is this a preflight OPTIONS request? 
-                    // If so, we'll just mock a response that allows the next request to continue
-                    // TODO: Make this configurable as some users may *want* the requests to occur
-                    // as normal for anti-fingerprinting reasons. It's a tricky tradeoff that we
-                    // should allow the user to configure.
-                    if (is_request && request.method && request.method.toLowerCase() === 'options' && !is_cors_preflight_handled) {
-                        cdp_logger.debug('Pre-flight OPTIONS request detected, mocking a passing response.', {
-                            url: request.url
-                        });
-
-                        const headers = fetchgen.convert_headers_map_to_array(request.headers);
-                        // Pull Origin header so we now what to reply with to pass the CORS check
-                        const cors_origin = fetchgen.get_header_value_ignore_case('Origin', headers);
-                        const cors_method = fetchgen.get_header_value_ignore_case('Access-Control-Request-Method', headers);
-                        const cors_headers = fetchgen.get_header_value_ignore_case('Access-Control-Request-Headers', headers);
-
-                        await Fetch.fulfillRequest({
-                            requestId,
-                            responseCode: 200,
-                            responseHeaders: [
-                                { name: 'Access-Control-Allow-Origin', value: cors_origin },
-                                { name: 'Access-Control-Allow-Methods', value: cors_method },
-                                { name: 'Access-Control-Allow-Headers', value: cors_headers },
-                                { name: 'Access-Control-Allow-Credentials', value: 'true' },
-                                // Never cache CORS preflight, we need to make sure the request
-                                // chain happens in the same order each time in case the user is doing
-                                // an OPTIONS request through the proxy.
-                                { name: 'Access-Control-Max-Age', value: '0' },
-                                { name: 'Content-Type', value: 'text/plain; charset=utf-8' },
-                                { name: 'Content-Length', value: String(Buffer.byteLength('')) },
-                            ],
-                            body: Buffer.from('').toString('base64'),
-                        });
-                        is_cors_preflight_handled = true;
-                        return;
+                    // Preserve the existing OPTIONS replay policy, but only mock
+                    // real preflights. Access-Control-Request-Headers is optional.
+                    if (is_request && !is_cors_preflight_handled) {
+                        const preflight_headers = cors_preflight_response_headers(request);
+                        if (preflight_headers) {
+                            cdp_logger.debug('Pre-flight OPTIONS request detected, mocking a passing response.', {
+                                url: request.url
+                            });
+                            await Fetch.fulfillRequest({
+                                requestId,
+                                responseCode: 200,
+                                responseHeaders: preflight_headers,
+                                body: ''
+                            });
+                            is_cors_preflight_handled = true;
+                            return;
+                        }
                     }
 
                     // Catch the base request and swap it
@@ -1378,20 +1407,10 @@ async function intercept_navigation_and_capture(tab, url_to_host_on, html_to_ser
                             status_code: responseStatusCode
                         });
 
-                        let body = '';
-                        if (!REDIRECT_STATUS_CODES.includes(responseStatusCode)) {
-                            const response_tmp = await Fetch.getResponseBody({ requestId });
-                            body = response_tmp.body;
-                            if (response_tmp.base64Encoded) {
-                                body = atob(body);
-                            }
-                        }
-                        const raw_body = Buffer.from(body);
-
-                        let formatted_headers = {};
-                        responseHeaders.forEach(header_pair => {
-                            formatted_headers[header_pair.name] = header_pair.value;
-                        });
+                        const raw_body = await read_captured_response_body(tab, requestId, request.method, responseStatusCode);
+                        const formatted_headers = utils.fetch_headers_to_proxy_response_headers(
+                            responseHeaders, raw_body, request.method, responseStatusCode
+                        );
 
                         const response_string = fetchgen.get_blank_response();
                         await Fetch.fulfillRequest({
@@ -1528,7 +1547,7 @@ async function _manual_browser_visit(tab, url) {
                     patterns: [{ urlPattern: capture_url, requestStage: 'Response' }]
                 });
 
-                Fetch.requestPaused(async({ requestId, responseStatusCode, responseHeaders, responseErrorReason }) => {
+                Fetch.requestPaused(async({ requestId, request, responseStatusCode, responseHeaders, responseErrorReason }) => {
                     try {
                         if (responseErrorReason) {
                             await resolve({
@@ -1541,15 +1560,7 @@ async function _manual_browser_visit(tab, url) {
                             return;
                         }
 
-                        let raw_body = Buffer.alloc(0);
-                        if (!REDIRECT_STATUS_CODES.includes(responseStatusCode)) {
-                            const response_tmp = await Fetch.getResponseBody({ requestId });
-                            if (response_tmp.base64Encoded) {
-                                raw_body = Buffer.from(response_tmp.body, 'base64');
-                            } else {
-                                raw_body = Buffer.from(response_tmp.body, 'utf8');
-                            }
-                        }
+                        const raw_body = await read_captured_response_body(tab, requestId, request.method, responseStatusCode);
 
                         await Fetch.fulfillRequest({
                             requestId,
@@ -1558,15 +1569,9 @@ async function _manual_browser_visit(tab, url) {
                             body: Buffer.from(fetchgen.get_blank_response()).toString('base64'),
                         });
 
-                        const normalized_headers = utils.fetch_headers_to_proxy_response_headers(responseHeaders);
-                        if (typeof normalized_headers['content-length'] !== 'undefined') {
-                            normalized_headers['content-length'] = String(raw_body.length);
-                        }
-                        if (typeof normalized_headers['Content-Length'] !== 'undefined') {
-                            normalized_headers['Content-Length'] = String(raw_body.length);
-                        }
-                        delete normalized_headers['content-encoding'];
-                        delete normalized_headers['Content-Encoding'];
+                        const normalized_headers = utils.fetch_headers_to_proxy_response_headers(
+                            responseHeaders, raw_body, request.method, responseStatusCode
+                        );
 
                         cdp_logger.debug('Captured response headers.', {
                             headers: normalized_headers,
