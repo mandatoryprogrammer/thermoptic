@@ -196,6 +196,8 @@ These environment variables specify how `thermoptic` should be configured when i
 
 `HTTP_PROXY_PORT`: The port that the `thermoptic` proxy should listen on. If you're running `thermoptic` in Docker you'll also need to change the `ports` mapping field to match.
 
+`THERMOPTIC_DNS`: The DNS server that the Dockerized Chrome and `proxyrouter` services should use. Set this to one IPv4 or IPv6 address, such as `1.1.1.1`, in your shell or Compose `.env` file. If unset or empty, both services inherit Docker's DNS settings. Run `docker compose up -d` after changing it so the affected containers are recreated.
+
 `CHROME_DEBUGGING_PORT`: The port that the Chrome Debugging Protocol is exposed on. This port is specified when you launch Chrome/Chromium with the `--remote-debugging-port` flag set to a value such as `9222`.
 
 `CHROME_DEBUGGING_HOST`: The host that the Chrome Debugging Protocol is exposed on. This is often `127.0.0.1` if the browser is launched locally and `thermoptic` is not running in Docker. If it is running in Docker you may have to use `host.docker.internal`, see the [Docker docs](https://docs.docker.com/desktop/features/networking/#i-want-to-connect-from-a-container-to-a-service-on-the-host) for information.
