@@ -49,6 +49,13 @@ export const ALWAYS_CLEAN_HEADERS = [
 
 ];
 
+// Browser-controlled privacy headers do not make a request CORS non-simple.
+// Ignore them only for routing, keeping outgoing privacy signals under Chrome's control.
+export const CORS_CLASSIFICATION_IGNORED_HEADERS = [
+    'dnt',
+    'sec-gpc'
+];
+
 export const ERROR_HEADER_NAME = 'X-Proxy-Error';
 
 // export const PROXY_REQUEST_TIMEOUT = (1000 * 60 * 3);

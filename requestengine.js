@@ -200,9 +200,12 @@ function get_request_details(url, protocol, method, path, headers, body) {
         is_user_navigation: false,
     };
 
-    // Strip headers that should always be rewritten for stealth purposes
+    // Ignore browser-controlled headers when classifying the request, without
+    // changing which headers are passed to the selected route.
     const filtered_headers = headers.filter(header => {
-        return !config.ALWAYS_CLEAN_HEADERS.includes(header.key.toLowerCase());
+        const header_name = header.key.toLowerCase();
+        return !config.ALWAYS_CLEAN_HEADERS.includes(header_name) &&
+            !config.CORS_CLASSIFICATION_IGNORED_HEADERS.includes(header_name);
     });
 
     // Determine if the request qualifies as a CORS simple request
