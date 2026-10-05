@@ -6,7 +6,8 @@ import * as logger from './logger.js';
 import { CA_CERTIFICATE_PATH, CA_PRIVATE_KEY_PATH, ensure_ca_material } from './certificates.js';
 const CONNECTION_STATE_TTL_MS = 15 * 60 * 1000;
 const FILTERED_RESPONSE_HEADER_NAMES = new Set([
-    'content-encoding', 'connection', 'keep-alive', 'proxy-connection'
+    'content-encoding', 'content-length', 'transfer-encoding', 'trailer',
+    'connection', 'keep-alive', 'proxy-connection'
 ]);
 const HTTP2_INCOMPATIBLE_RESPONSE_HEADER_NAMES = new Set([
     'connection',
@@ -105,49 +106,51 @@ export async function get_http_proxy(port, ready_func, error_func, on_request_fu
             const adapted_request = await adapt_request_for_handler(mockttp_request);
             try {
                 const handler_result = await on_request_func(adapted_request);
-                if (!handler_result || !handler_result.response) {
+                let response = handler_result && handler_result.response;
+                if (!response) {
                     proxy_logger.error('Proxy request handler returned an invalid response payload.', {
                         request_id: adapted_request.request_id,
                         url: adapted_request.url || adapted_request.requestOptions?.path
                     });
-                    return {
+                    response = {
                         statusCode: 502,
-                        headers: {
+                        header: {
                             'Content-Type': 'text/plain'
                         },
                         body: 'Proxy handler failed to supply a response.'
                     };
                 }
 
-                const response = handler_result.response;
-                const sanitized_headers = sanitize_proxy_response_headers(response.header ?? {}, {
+                const status_code = response.statusCode === undefined || response.statusCode === null ? 500 : response.statusCode;
+                const has_no_body = utils.response_has_no_body(mockttp_request.method, status_code);
+                const body = has_no_body ? Buffer.alloc(0) : normalize_body_to_buffer(response.body);
+                const sanitized_headers = sanitize_proxy_response_headers(response.header || {}, {
                     strip_http2_incompatible_headers: is_http2_downstream
                 });
+                // Hooks may replace the body or status after CDP capture. Frame
+                // the final buffered bytes, discarding any earlier length/transfer headers.
+                // HEAD/304 have unknown representation lengths; 1xx/204 forbid length.
+                if (!has_no_body || status_code === 205) {
+                    sanitized_headers['content-length'] = String(body.length);
+                }
                 if (!is_http2_downstream) {
                     // mockttp removes Node's default Connection header. Select
                     // persistence from this client, never the upstream connection.
                     const connection_options = String(mockttp_request.headers.connection || '')
                         .toLowerCase().split(',').map(value => value.trim());
-                    const response_header_names = Object.keys(sanitized_headers).map(name => name.toLowerCase());
-                    const transfer_encoding = Object.entries(sanitized_headers)
-                        .find(([name]) => name.toLowerCase() === 'transfer-encoding');
-                    const is_chunked = transfer_encoding && String(transfer_encoding[1])
-                        .toLowerCase().split(',').pop().trim() === 'chunked';
-                    const response_is_delimited = utils.response_has_no_body(mockttp_request.method, response.statusCode) ||
-                        (!transfer_encoding && response_header_names.includes('content-length')) || is_chunked;
-                    const keep_alive = response_is_delimited && !connection_options.includes('close') &&
+                    const keep_alive = !connection_options.includes('close') &&
                         (http_version === '1.1' || connection_options.includes('keep-alive'));
                     sanitized_headers.connection = keep_alive ? 'keep-alive' : 'close';
                 }
                 const response_payload = {
-                    statusCode: response.statusCode ?? 500,
+                    statusCode: status_code,
                     statusMessage: response.statusMessage,
                     headers: sanitized_headers,
-                    body: response.body
+                    body
                 };
                 if (TRACE_ENABLED) {
                     log_raw_proxy_request(adapted_request, http_version);
-                    log_raw_proxy_response(adapted_request, response, sanitized_headers, http_version);
+                    log_raw_proxy_response(adapted_request, response_payload, sanitized_headers, http_version);
                 }
                 return response_payload;
             } catch (handler_error) {
