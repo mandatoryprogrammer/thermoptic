@@ -53,3 +53,23 @@ With the same installed Node, Chrome, and repository dependencies, `node /tmp/th
 The bundled after-request hook reads metadata from both strings and arrays of strings. Its case-insensitive header reader creates a comma-separated string view for metadata checks and ignores non-string entries; it leaves the response header object and repeated `Set-Cookie` values untouched. This prevents repeated `Server`, `Content-Type`, or `CF-Mitigated` fields from causing `.toLowerCase()` failures after capture starts preserving duplicates.
 
 `node /tmp/thermoptic-hook-framing-20261005/duplicate-headers.mjs` passed eight focused checks using the real formatter and bundled hook, covering ordinary and repeated metadata, mixed header casing, non-HTML and empty values, and unchanged cookies. The fixtures have no target URL and use a CDP sentinel to ensure no browser operations occur. `node /tmp/thermoptic-hook-framing-20261005/verify-bundled-hook.mjs` then passed all 36 HTTP/1.1 and TLS HTTP/2 wire checks with repeated `Server` fields passed through the bundled hook before the existing body-changing fixture hook. Results are in `duplicate-results.json` and `bundled-hook-wire-results.json`; the wire log is `bundled-hook-wire.log`. Hook syntax and whitespace checks passed; no dependencies or committed tests were added.
+
+## Shared container DNS
+
+`THERMOPTIC_DNS` optionally selects the same DNS resolver for the `chrome` and `proxyrouter` Compose services. Set it in the shell running Compose, or in the project's `.env` file. Supply one literal IPv4 or IPv6 address, without a port, URL, brackets, or comma-separated list. This is a Compose setting applied when containers are created, not a runtime environment variable read by the applications.
+
+For example, to explicitly select a public resolver:
+
+```sh
+THERMOPTIC_DNS=1.1.1.1 docker compose up -d
+```
+
+Use your reachable private/VPN resolver instead when it is needed for target hostnames or the upstream proxy's hostname. Review the resulting setting with `docker compose config` using the same environment. Compose recreates affected containers when the configured resolver changes; `docker compose restart` alone does not apply a new setting. The CI and GPU Compose overlays inherit the same option.
+
+When the variable is unset or empty, neither service sets an explicit resolver and Docker's DNS configuration is inherited. This replaces Chrome's previous hardcoded `8.8.8.8`/`1.1.1.1` default. To clear a persisted value from `.env` for a run, use `THERMOPTIC_DNS= docker compose up -d`.
+
+On the default Compose network, `/etc/resolv.conf` still points to Docker's embedded resolver (`127.0.0.11`); the option selects its upstream resolver. Docker service discovery remains available. This can address unsuitable inherited DNS servers, but does not bypass or repair an unreachable embedded resolver. An upstream HTTP proxy can resolve destination hostnames remotely; the router still needs to resolve the upstream proxy's own hostname when it is not an IP address.
+
+### Shared DNS verification, 2026-10-05
+
+Docker Engine 29.7.2 and Compose 5.5.0 were used with the existing Chrome and proxy-router images, without builds, pulls, or dependency installs. `python3 /tmp/thermoptic-pr44-review/shared-dns-check.py` passed 15 configuration checks covering unset/empty values, IPv4/IPv6 interpolation, CI/GPU overlays, and environment-file versus shell precedence. Runtime checks confirmed both services' Docker DNS configuration for unset, selected, and cleared values; container recreation on changes; and preserved Docker service discovery. With a local private DNS/HTTP fixture, the Chrome container's OS resolver resolved the private hostname and the actual proxy router forwarded a request successfully (HTTP 200). The Chrome browser process was not launched for these DNS checks. Temporary containers and networks were removed; results are saved in `/tmp/thermoptic-pr44-review/shared-dns-results.json`.
