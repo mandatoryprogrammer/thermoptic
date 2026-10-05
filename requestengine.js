@@ -204,7 +204,8 @@ function get_request_details(url, protocol, method, path, headers, body) {
     // changing which headers are passed to the selected route.
     const filtered_headers = headers.filter(header => {
         const header_name = header.key.toLowerCase();
-        return !config.ALWAYS_CLEAN_HEADERS.includes(header_name) &&
+        return !header_name.startsWith('sec-ch-') &&
+            !config.ALWAYS_CLEAN_HEADERS.includes(header_name) &&
             !config.CORS_CLASSIFICATION_IGNORED_HEADERS.includes(header_name);
     });
 
