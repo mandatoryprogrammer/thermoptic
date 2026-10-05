@@ -51,18 +51,51 @@ export function convert_headers_array(flat_headers) {
     return result;
 }
 
-export function fetch_headers_to_proxy_response_headers(fetch_headers) {
-    let formatted_headers = {};
-    fetch_headers.map(header_pair => {
-        if (!header_pair || typeof header_pair.name !== 'string') {
-            return;
+export function response_has_no_body(method, status_code) {
+    return method.toUpperCase() === 'HEAD' || status_code < 200 ||
+        status_code === 204 || status_code === 205 || status_code === 304;
+}
+
+export function fetch_headers_to_proxy_response_headers(fetch_headers, body, method, status_code) {
+    // Chrome has already decoded the body. Rebuild framing for the downstream
+    // connection instead of forwarding the upstream compression/transfer framing.
+    const excluded_names = new Set([
+        'content-encoding', 'content-length', 'transfer-encoding', 'trailer',
+        'connection', 'keep-alive', 'proxy-connection', 'te', 'upgrade'
+    ]);
+    for (const header of fetch_headers) {
+        if (header && typeof header.name === 'string' && header.name.toLowerCase() === 'connection') {
+            for (const name of header.value.split(',')) {
+                excluded_names.add(name.trim().toLowerCase());
+            }
         }
-        const normalized_name = header_pair.name.toLowerCase();
-        if (normalized_name.startsWith(':')) {
-            return;
+    }
+
+    const formatted_headers = Object.create(null);
+    for (const header of fetch_headers) {
+        if (!header || typeof header.name !== 'string') {
+            continue;
         }
-        formatted_headers[header_pair.name] = header_pair.value;
-    });
+        const name = header.name.toLowerCase();
+        if (name.startsWith(':') || excluded_names.has(name)) {
+            continue;
+        }
+        const previous = formatted_headers[name];
+        if (typeof previous === 'undefined') {
+            formatted_headers[name] = header.value;
+        } else if (Array.isArray(previous)) {
+            previous.push(header.value);
+        } else {
+            // In particular, Set-Cookie must remain separate header fields.
+            formatted_headers[name] = [previous, header.value];
+        }
+    }
+
+    // HEAD/304 lengths describe a selected representation, not this empty body.
+    // Its decoded size is unknown; omit the optional length. 1xx/204 forbid it.
+    if (!response_has_no_body(method, status_code) || status_code === 205) {
+        formatted_headers['content-length'] = String(body.length);
+    }
     return formatted_headers;
 }
 
