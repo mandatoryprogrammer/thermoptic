@@ -87,7 +87,10 @@ function get_header_value_ignore_case(headers, header_name) {
     const target = header_name.toLowerCase();
     for (const [key, value] of Object.entries(headers)) {
         if (typeof key === 'string' && key.toLowerCase() === target) {
-            return value;
+            // Use a string view for metadata checks without changing the stored
+            // header values, especially separate Set-Cookie fields.
+            const values = Array.isArray(value) ? value : [value];
+            return values.filter(header_value => typeof header_value === 'string').join(', ');
         }
     }
     return '';
