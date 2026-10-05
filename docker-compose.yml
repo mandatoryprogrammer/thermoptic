@@ -8,6 +8,9 @@ services:
       # Otherwise give a full proxy URI like:
       # http://user:pass@proxy.example:8080
       UPSTREAM_PROXY: ""
+    # Optional shared resolver for proxyrouter and Chrome (one IPv4/IPv6 address).
+    # Unset or empty inherits Docker DNS. See _readme/internal-notes.md.
+    dns: "${THERMOPTIC_DNS:-}"
     expose:
       - 3128
   # Important: This Chrome instance is not meant to be perfectly stealthy
@@ -54,9 +57,7 @@ services:
       CHROME_PROXY_ENABLE_DNS: "true"
       # Comma-separated hosts Chrome should always resolve locally when DNS proxying is enabled.
       CHROME_PROXY_DNS_EXCLUSIONS: "localhost,thermoptic"
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+    dns: "${THERMOPTIC_DNS:-}"
     ports:
       - 127.0.0.1:14111:14111
   thermoptic:

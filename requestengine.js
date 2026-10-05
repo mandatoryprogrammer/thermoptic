@@ -8,35 +8,6 @@ import * as cookie from 'cookie';
 // Message if we couldn't figure out how to handle the request
 const UNKNOWN_REQUEST_MSG = `You have found a request type that thermoptic doesn't know how to handle! If the browser would be able to make this request please submit a bug report at https://github.com/mandatoryprogrammer/thermoptic/issues`;
 
-// FIFO admission-control queue: caps how many requests run their Chrome/CDP
-// route at once. Excess requests wait here instead of all racing the request
-// timeout simultaneously (which saturated Chrome and caused cascading
-// timeouts under bursty concurrent load, e.g. traffic fanned out through an
-// intercepting proxy like Caido).
-const request_queue = [];
-let in_flight_route_count = 0;
-
-function acquire_route_slot() {
-    return new Promise((resolve) => {
-        if (in_flight_route_count < config.MAX_CONCURRENT_PROXY_REQUESTS) {
-            in_flight_route_count += 1;
-            resolve();
-            return;
-        }
-        request_queue.push(resolve);
-    });
-}
-
-function release_route_slot() {
-    const next_resolve = request_queue.shift();
-    if (next_resolve) {
-        // Hand the slot directly to the next waiter.
-        next_resolve();
-        return;
-    }
-    in_flight_route_count -= 1;
-}
-
 // // Sec-Fetch-Dest
 // requester_resource: "document",
 // // Sec-Fetch-Site
@@ -168,15 +139,7 @@ export async function process_request(request_logger, url, protocol, method, pat
         request_logger.debug('Request matched routing rule.', {
             rule_name: matching_rule.name
         });
-        // Queue-aware execution: wait for a concurrency slot before running
-        // the Chrome/CDP route so bursts don't saturate the browser.
-        await acquire_route_slot();
-        let route_response;
-        try {
-            route_response = await matching_rule.route(request_logger, url, protocol, method, path, headers, body);
-        } finally {
-            release_route_slot();
-        }
+        const route_response = await matching_rule.route(request_logger, url, protocol, method, path, headers, body);
         request_logger.debug('Route execution completed.', {
             rule_name: matching_rule.name,
             status_code: route_response.statusCode
@@ -237,17 +200,13 @@ function get_request_details(url, protocol, method, path, headers, body) {
         is_user_navigation: false,
     };
 
-    // Strip headers that should always be rewritten for stealth purposes.
-    // Client-hint headers (sec-ch-*) are an open-ended set that grows with every
-    // Chrome release (sec-ch-ua-wow64, sec-ch-ua-form-factors, ...), so match the
-    // whole family by prefix rather than enumerating each one. An unlisted
-    // client-hint here would otherwise fail the CORS-simple check and 500.
+    // Ignore browser-controlled headers when classifying the request, without
+    // changing which headers are passed to the selected route.
     const filtered_headers = headers.filter(header => {
-        const header_key = header.key.toLowerCase();
-        if (header_key.startsWith('sec-ch-')) {
-            return false;
-        }
-        return !config.ALWAYS_CLEAN_HEADERS.includes(header_key);
+        const header_name = header.key.toLowerCase();
+        return !header_name.startsWith('sec-ch-') &&
+            !config.ALWAYS_CLEAN_HEADERS.includes(header_name) &&
+            !config.CORS_CLASSIFICATION_IGNORED_HEADERS.includes(header_name);
     });
 
     // Determine if the request qualifies as a CORS simple request

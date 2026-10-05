@@ -1,0 +1,4 @@
+{
+    "HttpsUpgradesEnabled": false,
+    "HttpsOnlyMode": "disallowed"
+}
