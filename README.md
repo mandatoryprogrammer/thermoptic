@@ -52,6 +52,19 @@ That's all, now you can proxy traffic through it:
 curl --proxy http://127.0.0.1:1234 --insecure https://ja4db.com/id/ja4h/
 ```
 
+Both Node.js services use Node 24.22.1, which includes the fix for the Brotli decoder vulnerability [CVE-2026-111497](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases). When running outside Docker, use Node 24.22.1 or a newer patched release in the 24.x line.
+
+Existing deployments must rebuild and recreate both services to apply the runtime update:
+
+```sh
+docker compose build --pull thermoptic proxyrouter
+docker compose up -d --force-recreate thermoptic proxyrouter
+docker compose exec thermoptic node --version
+docker compose exec proxyrouter node --version
+```
+
+Both version checks should report `v24.22.1`. Updating npm packages alone does not update Node's bundled Brotli decoder.
+
 Important notes:
 * By default the proxy runs without authentication. If you plan on exposing the proxy externally please make sure to set authentication with the environment variables `PROXY_USERNAME` and `PROXY_PASSWORD`.
 * If you don't want to use `---insecure` you need to use the generated CA file located in `./ssl/rootCA.crt`. This is generated the first time you run `thermoptic`.
